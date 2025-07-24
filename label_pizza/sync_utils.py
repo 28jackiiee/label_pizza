@@ -1315,7 +1315,7 @@ def sync_question_groups(
     
     for idx, data in enumerate(question_groups_data, 1):
         # Validate required fields
-        required = {"title", "display_title", "description", "is_reusable", "is_auto_submit", "verification_function", "questions"}
+        required = {"title", "display_title", "description", "is_reusable", "is_auto_submit", "verification_function", "questions", "is_active"}
         data_keys = set(data.keys())
 
         if data_keys != required:
@@ -1348,6 +1348,10 @@ def sync_question_groups(
         
         # Set defaults and normalize
         data.setdefault("display_title", data["title"])
+        
+        # Convert is_active → is_archived
+        if "is_active" in data:
+            data["is_archived"] = not data.pop("is_active")
         
         if not isinstance(data["questions"], list):
             raise ValueError(f"Entry #{idx}: 'questions' must be a list")

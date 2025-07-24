@@ -13,7 +13,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 import json
 import atexit
-from wfork_streamlit_profiler import Profiler
+# from wfork_streamlit_profiler import Profiler
 import argparse
     
 parser = argparse.ArgumentParser(add_help=False)
