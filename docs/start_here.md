@@ -46,7 +46,7 @@ echo 'DBURL=postgresql://<user>:<password>@<host>:<port>/<database>' > .env
 
 ```bash
 # create the first Admin account (change the args to your own)
-python label_pizza/init_or_reset_db.py \
+python label_pizza/manage_db.py \
   --mode init \
   --database-url-name DBURL \
   --email admin@example.com \

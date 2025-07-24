@@ -134,7 +134,7 @@ echo 'DBURL=postgresql://<user>:<password>@<host>:<port>/<database>' > .env
 
 ```bash
 # create the first Admin account (change the args to your own)
-python label_pizza/init_or_reset_db.py \
+python label_pizza/manage_db.py \
   --mode init \
   --database-url-name DBURL \
   --email admin@example.com \
@@ -170,7 +170,7 @@ label_pizza/
 ├─ models.py             # Database tables
 ├─ services.py           # Business logic
 ├─ sync_utils.py         # Upload data to the database
-└─ init_or_reset_db.py   # Init/backup/reset the database with a seed admin user
+└─ manage_db.py          # Init/backup/reset the database with a seed admin user
 sync_from_folder.py      # Sync data from a folder
 workspace/               # Your own data folder
 example/                 # Example data folder

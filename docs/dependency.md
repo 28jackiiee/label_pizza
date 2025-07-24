@@ -11,7 +11,7 @@
 - The system will always ask for confirmation before proceeding with any deletion
 - All `delete_xxx(name, **backup_params)` functions use `delete_xxx_using_id(id, **backup_params)` under the hood after resolving the name to ID
 
-**All delete functions include these backup parameters (imported from init_or_reset_db.py):**
+**All delete functions include these backup parameters (imported from manage_db.py):**
 - `backup_first=True` - Create automatic backup before deletion
 - `backup_dir="./backups"` - Default backup directory  
 - `backup_file=None` - Auto-generated timestamp filename
@@ -21,7 +21,6 @@
 |-------|----------------|-------------------|
 | User | `delete_user_using_id(id, **backup_params)` | `delete_user(user_id_str, **backup_params)` |
 | Video | `delete_video_using_id(id, **backup_params)` | `delete_video(video_uid, **backup_params)` |
-| VideoTag | `delete_video_tag_using_id(video_id, tag, **backup_params)` | `delete_video_tag(video_uid, tag, **backup_params)` |
 | QuestionGroup | `delete_question_group_using_id(id, **backup_params)` | `delete_question_group(title, **backup_params)` |
 | Question | `delete_question_using_id(id, **backup_params)` | `delete_question(text, **backup_params)` |
 | QuestionGroupQuestion | `delete_question_group_question_using_id(question_group_id, question_id, **backup_params)` | `delete_question_group_question(question_group_title, question_text, **backup_params)` |
@@ -39,19 +38,21 @@
 
 ### Name Management APIs
 
-| Table | Get Name (ID → Name) | Set Name (ID + Name → Update) |
-|-------|---------------------|------------------------------|
-| User | `get_user_name(id) → user_id_str` | `set_user_name_using_id(id, user_id_str, **backup_params)` |
-| Video | `get_video_name(id) → video_uid` | `set_video_name_using_id(id, video_uid, **backup_params)` |
-| QuestionGroup | `get_question_group_name(id) → title` | `set_question_group_name_using_id(id, title, **backup_params)` |
-| Question | `get_question_name(id) → text` | `set_question_name_using_id(id, text, **backup_params)` |
-| Schema | `get_schema_name(id) → name` | `set_schema_name_using_id(id, name, **backup_params)` |
-| Project | `get_project_name(id) → name` | `set_project_name_using_id(id, name, **backup_params)` |
-| ProjectGroup | `get_project_group_name(id) → name` | `set_project_group_name_using_id(id, name, **backup_params)` |
+| Table | Get Name (ID → Name) | Set Name (ID + Name → Update) | Set Name (Name + Name → Update) |
+|-------|---------------------|------------------------------|----------------------------------|
+| User | `get_user_name(id) → user_id_str` | `set_user_name_using_id(id, user_id_str, **backup_params)` | `set_user_name(old_user_id_str, new_user_id_str, **backup_params)` |
+| Video | `get_video_name(id) → video_uid` | `set_video_name_using_id(id, video_uid, **backup_params)` | `set_video_name(old_video_uid, new_video_uid, **backup_params)` |
+| QuestionGroup | `get_question_group_name(id) → title` | `set_question_group_name_using_id(id, title, **backup_params)` | `set_question_group_name(old_title, new_title, **backup_params)` |
+| Question | `get_question_name(id) → text` | `set_question_name_using_id(id, text, **backup_params)` | `set_question_name(old_text, new_text, **backup_params)` |
+| Schema | `get_schema_name(id) → name` | `set_schema_name_using_id(id, name, **backup_params)` | `set_schema_name(old_name, new_name, **backup_params)` |
+| Project | `get_project_name(id) → name` | `set_project_name_using_id(id, name, **backup_params)` | `set_project_name(old_name, new_name, **backup_params)` |
+| ProjectGroup | `get_project_group_name(id) → name` | `set_project_group_name_using_id(id, name, **backup_params)` | `set_project_group_name(old_name, new_name, **backup_params)` |
 
 **Notes:**
 - **Get operations** are read-only lookups that return the current name for an ID
-- **Set operations** update the name and include backup parameters. The new name must be unique, otherwise an error will be raised.
+- **Set operations (using ID)** update the name by database ID and include backup parameters
+- **Set operations (using name)** update the name by current name (more user-friendly)
+- The new name must be unique, otherwise an error will be raised
 - **Set operations** use same backup parameters as delete APIs above
 
 ## Direct Dependency Graph
@@ -61,7 +62,6 @@ This shows what tables would be directly affected (have orphaned/inconsistent da
 ## LEAF NODES (No dependencies - safe to delete)
 
 ```
-VideoTag → must delete first: []
 ProjectGroupProject → must delete first: []
 ProjectVideoQuestionDisplay → must delete first: []
 ReviewerGroundTruth → must delete first: []
@@ -120,8 +120,7 @@ AnswerReview → must delete first: []
 ## LEVEL 3 DEPENDENCIES
 
 ### Video
-**Must delete first:** `[VideoTag, ProjectVideo]`
-- Call `delete_video_tag_using_id(video_id, tag)` where `(video_id = video_id)` from `VideoTag`
+**Must delete first:** `[ProjectVideo]`
 - Call `delete_project_video_using_id(project_id, video_id)` where `(video_id = video_id)` from `ProjectVideo`
 
 ### Question

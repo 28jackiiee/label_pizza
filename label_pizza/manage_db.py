@@ -5,22 +5,22 @@ Database Initialization/Backup/Reset Script for Label Pizza
 
 Usage:
     # Initialize database (safe, won't affect existing tables)
-    python label_pizza/init_or_reset_db.py --database-url-name DBURL --mode init --email admin@example.com --password mypass --user-id "Admin"
+    python label_pizza/manage_db.py --database-url-name DBURL --mode init --email admin@example.com --password mypass --user-id "Admin"
 
     # Create backup with auto-generated filename
-    python label_pizza/init_or_reset_db.py --database-url-name DBURL --mode backup
+    python label_pizza/manage_db.py --database-url-name DBURL --mode backup
     
     # Create backup in custom directory
-    python label_pizza/init_or_reset_db.py --database-url-name DBURL --mode backup --backup-dir ./my_backups --backup-file important_backup.sql.gz
+    python label_pizza/manage_db.py --database-url-name DBURL --mode backup --backup-dir ./my_backups --backup-file important_backup.sql.gz
     
     # Nuclear reset with automatic backup (RECOMMENDED)
-    python label_pizza/init_or_reset_db.py --database-url-name DBURL --mode reset --email admin@example.com --password mypass --user-id "Admin" --auto-backup
+    python label_pizza/manage_db.py --database-url-name DBURL --mode reset --email admin@example.com --password mypass --user-id "Admin" --auto-backup
     
     # Nuclear reset with custom backup location
-    python label_pizza/init_or_reset_db.py --database-url-name DBURL --mode reset --email admin@example.com --password mypass --user-id "Admin" --auto-backup --backup-dir ./backups --backup-file my_backup.sql.gz
+    python label_pizza/manage_db.py --database-url-name DBURL --mode reset --email admin@example.com --password mypass --user-id "Admin" --auto-backup --backup-dir ./backups --backup-file my_backup.sql.gz
     
     # Reset from existing backup
-    python label_pizza/init_or_reset_db.py --database-url-name DBURL --mode restore --backup-dir ./backups --backup-file my_backup.sql.gz --email admin@example.com --password mypass --user-id "Admin"
+    python label_pizza/manage_db.py --database-url-name DBURL --mode restore --backup-dir ./backups --backup-file my_backup.sql.gz --email admin@example.com --password mypass --user-id "Admin"
 """
 
 import argparse
@@ -49,7 +49,7 @@ except ImportError as e:
 
 # Import backup functionality
 try:
-    from backup_restore import DatabaseBackupRestore
+    from label_pizza.backup_restore import DatabaseBackupRestore
     BACKUP_AVAILABLE = True
 except ImportError:
     print("⚠️  backup_restore.py not found. Backup functionality disabled.")
@@ -68,22 +68,31 @@ class NuclearDatabaseManager:
         try:
             print("🔄 Closing all database sessions...")
             
-            # Close all sessions in the session pool
-            if hasattr(self.session_local, 'close_all'):
-                self.session_local.close_all()
-            
-            # For SQLAlchemy 2.x
+            # For SQLAlchemy 2.x (preferred method)
             try:
                 from sqlalchemy.orm.session import close_all_sessions
                 close_all_sessions()
-                print("   ✅ All sessions closed")
+                print("   ✅ All sessions closed (modern method)")
             except ImportError:
-                # For SQLAlchemy 1.x
+                # For SQLAlchemy 1.4+ (but not 2.x)
                 try:
-                    self.session_local.close_all()
-                    print("   ✅ All sessions closed (legacy method)")
-                except AttributeError:
-                    print("   ⚠️  Could not close sessions automatically")
+                    from sqlalchemy.orm import close_all_sessions
+                    close_all_sessions()
+                    print("   ✅ All sessions closed (1.4+ method)")
+                except ImportError:
+                    # Fallback for older SQLAlchemy versions
+                    try:
+                        # Only use the deprecated method as last resort
+                        if hasattr(self.session_local, 'close_all'):
+                            import warnings
+                            with warnings.catch_warnings():
+                                warnings.simplefilter("ignore", category=DeprecationWarning)
+                                self.session_local.close_all()
+                            print("   ✅ All sessions closed (legacy method with warning suppressed)")
+                        else:
+                            print("   ⚠️  Could not close sessions automatically")
+                    except Exception as e:
+                        print(f"   ⚠️  Error with legacy close method: {e}")
             
             # Dispose engine connection pool
             self.engine.dispose()
@@ -91,6 +100,109 @@ class NuclearDatabaseManager:
             
         except Exception as e:
             print(f"   ⚠️  Error closing sessions: {e}")
+
+    def kill_all_connections(self, exclude_current=True):
+        """Kill all existing database connections to clear stale ones (if permissions allow)"""
+        try:
+            print("🔪 Attempting to clear database connections...")
+            
+            # Create a completely fresh engine just for connection management
+            killer_engine = create_engine(
+                self.db_url, 
+                poolclass=NullPool,
+                echo=False,
+                connect_args={"application_name": "connection_killer"}
+            )
+            
+            with killer_engine.connect() as conn:
+                # First, check what connections exist
+                result = conn.execute(text("""
+                    SELECT application_name, state, count(*) 
+                    FROM pg_stat_activity 
+                    WHERE datname = current_database()
+                    GROUP BY application_name, state
+                    ORDER BY application_name
+                """))
+                
+                existing = result.fetchall()
+                print("   📊 Current connections:")
+                for app_name, state, count in existing:
+                    print(f"     - {app_name or 'unknown'} ({state}): {count}")
+                
+                # Try to kill connections (may fail without SUPERUSER)
+                try:
+                    if exclude_current:
+                        result = conn.execute(text("""
+                            SELECT pg_terminate_backend(pid) 
+                            FROM pg_stat_activity 
+                            WHERE datname = current_database()
+                            AND pid != pg_backend_pid()
+                            AND application_name != 'connection_killer'
+                        """))
+                    else:
+                        result = conn.execute(text("""
+                            SELECT pg_terminate_backend(pid) 
+                            FROM pg_stat_activity 
+                            WHERE datname = current_database()
+                            AND pid != pg_backend_pid()
+                        """))
+                    
+                    killed_connections = result.fetchall()
+                    killed_count = len([row for row in killed_connections if row[0]])
+                    print(f"   💀 Killed {killed_count} stale connections")
+                    
+                except Exception as kill_error:
+                    if "permission denied" in str(kill_error).lower() or "insufficient" in str(kill_error).lower():
+                        print("   ⚠️  No SUPERUSER privileges - cannot kill database connections")
+                        print("   🔄 Will rely on connection timeouts and fresh engines instead")
+                    else:
+                        print(f"   ⚠️  Could not kill connections: {kill_error}")
+            
+            killer_engine.dispose()
+            return True  # Return True even if we couldn't kill - we'll work around it
+            
+        except Exception as e:
+            print(f"   ❌ Connection management failed: {e}")
+            return False
+
+    def clear_stale_connections_and_restart_engine(self):
+        """Complete connection cleanup and engine restart"""
+        try:
+            print("🧹 Performing complete connection cleanup...")
+            
+            # Step 1: Close all local sessions and dispose engines
+            print("   🔄 Closing local sessions...")
+            self.close_all_sessions()
+            
+            # Step 2: Kill database-level connections
+            if self.kill_all_connections():
+                print("   ✅ Database connections cleared")
+            
+            # Step 3: Wait a moment for cleanup
+            import time
+            print("   ⏳ Waiting for cleanup to complete...")
+            time.sleep(3)
+            
+            # Step 4: Test that we can reconnect
+            print("   🔌 Testing fresh connection...")
+            test_engine = create_engine(
+                self.db_url, 
+                poolclass=NullPool,
+                echo=False,
+                connect_args={"application_name": "cleanup_test"}
+            )
+            
+            with test_engine.connect() as conn:
+                result = conn.execute(text("SELECT 1"))
+                result.scalar()
+                print("   ✅ Fresh connection successful")
+            
+            test_engine.dispose()
+            return True
+            
+        except Exception as e:
+            print(f"   ❌ Connection cleanup failed: {e}")
+            return False
     
     def nuclear_table_destruction(self) -> bool:
         """
@@ -101,21 +213,52 @@ class NuclearDatabaseManager:
             print("💥 NUCLEAR OPTION: Destroying all tables individually...")
             print("   Method: DROP TABLE CASCADE for each table (no mercy!)")
             
-            # Close all sessions first
-            self.close_all_sessions()
+            # NEW STEP 1: Clear all stale connections first!
+            print("\n🧹 STEP 1: Clearing stale connections...")
+            if not self.clear_stale_connections_and_restart_engine():
+                print("   ⚠️  Warning: Could not clear stale connections completely")
+                print("   🔄 Proceeding with connection timeout strategy...")
+            
+            print("\n💣 STEP 2: Beginning table destruction...")
             
             if not self.db_url:
                 print("   ❌ Database URL not available")
                 return False
             
-            # Create a completely fresh engine with no pooling
-            nuclear_engine = create_engine(
-                self.db_url, 
-                poolclass=NullPool,
-                echo=False,
-                isolation_level="AUTOCOMMIT"  # Force autocommit
-            )
+            # Create a completely fresh engine with no pooling - multiple times if needed
+            max_attempts = 3
+            for attempt in range(max_attempts):
+                try:
+                    print(f"   🔌 Creating fresh connection (attempt {attempt + 1}/{max_attempts})...")
+                    
+                    nuclear_engine = create_engine(
+                        self.db_url, 
+                        poolclass=NullPool,
+                        echo=False,
+                        isolation_level="AUTOCOMMIT",
+                        connect_args={"application_name": f"nuclear_destructor_v{attempt + 1}"}
+                    )
+                    
+                    # Test the connection immediately
+                    with nuclear_engine.connect() as test_conn:
+                        result = test_conn.execute(text("SELECT 1"))
+                        result.scalar()
+                        print(f"   ✅ Fresh connection successful")
+                        break  # Connection works, proceed
+                        
+                except Exception as e:
+                    print(f"   ⚠️  Connection attempt {attempt + 1} failed: {e}")
+                    if attempt == max_attempts - 1:
+                        print("   ❌ All connection attempts failed")
+                        return False
+                    
+                    # Wait before retry
+                    import time
+                    print("   ⏳ Waiting before retry...")
+                    time.sleep(2)
+                    continue
             
+            # Now proceed with destruction using the working connection
             with nuclear_engine.connect() as conn:
                 # Get current state
                 print("   🔍 Pre-destruction scan...")
@@ -151,41 +294,97 @@ class NuclearDatabaseManager:
                 resistant_tables = []
                 
                 # Phase 1: Individual table destruction with CASCADE
-                for table_name in target_tables:
+                for i, table_name in enumerate(target_tables, 1):
                     try:
-                        print(f"   💥 DESTROYING: {table_name}")
+                        print(f"   💥 DESTROYING: {table_name} ({i}/{len(target_tables)})")
+                        
+                        # Test connection health every 5 tables
+                        if i % 5 == 0:
+                            try:
+                                conn.execute(text("SELECT 1"))
+                            except Exception as health_error:
+                                print(f"   🚨 Connection health check failed: {health_error}")
+                                print("   🔄 Creating fresh connection for remaining tables...")
+                                
+                                # Close current connection and create new one
+                                conn.close()
+                                nuclear_engine.dispose()
+                                
+                                nuclear_engine = create_engine(
+                                    self.db_url, 
+                                    poolclass=NullPool,
+                                    echo=False,
+                                    isolation_level="AUTOCOMMIT",
+                                    connect_args={"application_name": f"nuclear_destructor_recover_{i}"}
+                                )
+                                
+                                conn = nuclear_engine.connect()
+                                print("   ✅ Fresh connection established")
+                        
+                        # Execute the destruction
                         conn.execute(text(f'DROP TABLE IF EXISTS public."{table_name}" CASCADE;'))
                         destroyed_count += 1
+                        
                     except Exception as e:
-                        print(f"   🛡️  {table_name} resisted destruction: {e}")
-                        resistant_tables.append(table_name)
+                        error_str = str(e).lower()
+                        if "timeout" in error_str or "connection" in error_str:
+                            print(f"   ⏰ {table_name} destruction timed out: {e}")
+                            print("   🔄 Will retry with fresh connection...")
+                            resistant_tables.append(table_name)
+                        else:
+                            print(f"   🛡️  {table_name} resisted destruction: {e}")
+                            resistant_tables.append(table_name)
                 
                 print(f"   📊 Destruction summary: {destroyed_count} obliterated, {len(resistant_tables)} survived")
                 
-                # Phase 2: Double-tap any survivors
+                # Phase 2: Double-tap any survivors with fresh connections
                 if resistant_tables:
-                    print("   🔄 Phase 2: Eliminating survivors...")
+                    print("   🔄 Phase 2: Eliminating survivors with fresh connections...")
                     for table_name in resistant_tables:
                         try:
-                            # Try different destruction methods
-                            print(f"   💥 DOUBLE-TAP: {table_name}")
-                            conn.execute(text(f'DROP TABLE public."{table_name}" CASCADE;'))  # No IF EXISTS
-                            print(f"   ✅ {table_name} eliminated")
+                            # Create a completely fresh connection for each resistant table
+                            retry_engine = create_engine(
+                                self.db_url, 
+                                poolclass=NullPool,
+                                echo=False,
+                                isolation_level="AUTOCOMMIT",
+                                connect_args={"application_name": f"table_eliminator_{table_name}"}
+                            )
+                            
+                            with retry_engine.connect() as retry_conn:
+                                print(f"   💥 DOUBLE-TAP: {table_name}")
+                                retry_conn.execute(text(f'DROP TABLE public."{table_name}" CASCADE;'))
+                                print(f"   ✅ {table_name} eliminated")
+                            
+                            retry_engine.dispose()
+                            
                         except Exception as e:
                             print(f"   🛡️  {table_name} is immortal: {e}")
                 
                 # Phase 3: Verification of total destruction
                 print("   🔍 Post-destruction verification...")
-                result = conn.execute(text("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE';"))
-                survivors = result.scalar()
+                try:
+                    result = conn.execute(text("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE';"))
+                    survivors = result.scalar()
+                except Exception as verify_error:
+                    print(f"   ⚠️  Verification connection failed, creating fresh one: {verify_error}")
+                    # Create fresh connection for verification
+                    verify_engine = create_engine(self.db_url, poolclass=NullPool, echo=False)
+                    with verify_engine.connect() as verify_conn:
+                        result = verify_conn.execute(text("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE';"))
+                        survivors = result.scalar()
+                    verify_engine.dispose()
+                
                 print(f"   📋 Surviving tables: {survivors}")
                 
                 if survivors > 0:
                     print("   ❌ Some tables survived the nuclear option!")
-                    # Show survivors
-                    result = conn.execute(text("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE';"))
-                    survivor_names = [row[0] for row in result.fetchall()]
-                    print(f"   🛡️  Immortal tables: {survivor_names}")
+                    try:
+                        result = conn.execute(text("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE';"))
+                        survivor_names = [row[0] for row in result.fetchall()]
+                        print(f"   🛡️  Immortal tables: {survivor_names}")
+                    except Exception:
+                        print("   ⚠️  Could not list surviving tables")
                     return False
                 else:
                     print("   ✅ TOTAL ANNIHILATION ACHIEVED!")
@@ -315,7 +514,7 @@ class NuclearDatabaseManager:
         except Exception as e:
             print(f"   ❌ Verification failed: {e}")
             return False
-
+            
 def create_backup_if_requested(db_url: str, backup_dir: str = "./backups", 
                              backup_file: Optional[str] = None, compress: bool = True) -> Optional[str]:
     """Create a backup before reset if requested"""
@@ -424,6 +623,57 @@ def confirm_nuclear_reset() -> bool:
     response = input("Type 'NUCLEAR' to confirm complete database destruction: ")
     return response.strip() == "NUCLEAR"
 
+def is_database_empty(db_url: str) -> tuple[bool, str]:
+    """Check if database is completely empty (no data in any table) - no prompts"""
+    try:
+        check_engine = create_engine(db_url, poolclass=NullPool, echo=False)
+        
+        with check_engine.connect() as conn:
+            # Check if any tables exist
+            result = conn.execute(text("""
+                SELECT COUNT(*) FROM information_schema.tables 
+                WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+            """))
+            table_count = result.scalar()
+            
+            if table_count == 0:
+                check_engine.dispose()
+                return True, "No tables found - database is empty"
+            
+            # Check if tables have any data
+            result = conn.execute(text("""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+            """))
+            table_names = [row[0] for row in result.fetchall()]
+            
+            tables_with_data = []
+            total_rows = 0
+            
+            for table_name in table_names:
+                try:
+                    count_result = conn.execute(text(f'SELECT COUNT(*) FROM public."{table_name}"'))
+                    row_count = count_result.scalar()
+                    total_rows += row_count
+                    if row_count > 0:
+                        tables_with_data.append(f"{table_name} ({row_count} rows)")
+                except Exception as e:
+                    # If we can't check a table, assume it has data to be safe
+                    check_engine.dispose()
+                    return False, f"Could not check table {table_name}: {e}"
+            
+            check_engine.dispose()
+            
+            if total_rows > 0:
+                return False, f"Found {total_rows} rows across {len(tables_with_data)} tables: {', '.join(tables_with_data)}"
+            else:
+                return True, f"Found {table_count} empty tables - safe to proceed"
+            
+    except Exception as e:
+        return False, f"Error checking database: {e}"
+
+
 def init_database(email: str, password: str, user_id: str, force: bool = False, 
                  engine: Engine = None, session_local = None, db_url: str = None) -> bool:
     """Initialize database safely (won't affect existing tables)"""
@@ -432,7 +682,46 @@ def init_database(email: str, password: str, user_id: str, force: bool = False,
     print("Mode: INIT (safe for existing databases)")
     print()
     
+    # Get database URL if not provided
+    if not db_url:
+        db_url = os.getenv("DBURL")
+    if not db_url:
+        print("❌ DBURL environment variable not found")
+        return False
+    
+    # NEW SAFETY CHECK: Ensure database is empty before proceeding
+    print("🔍 Checking database safety for INIT mode...")
+    is_empty, message = is_database_empty(db_url)
+    print(f"   {message}")
+    
+    if not is_empty:
+        print()
+        print("❌ INIT mode aborted - database contains existing data!")
+        print("INIT mode is only safe for completely empty databases.")
+        print()
+        print("🛡️  Your data is protected - no changes were made.")
+        print()
+        print("💡 RECOMMENDED: Use RESET mode with automatic backup instead:")
+        print(f"   python label_pizza/manage_db.py --mode reset \\")
+        print(f"     --email {email} \\")
+        print(f"     --password {password} \\")
+        print(f"     --user-id \"{user_id}\" \\")
+        print(f"     --auto-backup")
+        print()
+        print("This will:")
+        print("  1. Create a backup of your current data")
+        print("  2. Safely reset the database") 
+        print("  3. Create the admin user")
+        print()
+        print("Or if you really want to proceed unsafely:")
+        print(f"   python label_pizza/manage_db.py --mode reset --force \\")
+        print(f"     --email {email} --password {password} --user-id \"{user_id}\"")
+        return False
+    
+    print("   ✅ Database is empty - safe to proceed with INIT")
+    
     if not force:
+        print()
         print(f"📧 Email: {email}")
         print(f"👤 User ID: {user_id}")
         print(f"🔑 Password: {'*' * len(password)}")
@@ -547,7 +836,7 @@ def nuclear_reset_database(email: str, password: str, user_id: str, force: bool 
         print(f"\n❌ Nuclear reset failed: {e}")
         if backup_created:
             print(f"💾 You can restore from backup: {backup_created}")
-            print(f"   python label_pizza/init_or_reset_db.py --mode restore --backup-dir {backup_dir} --backup-file {os.path.basename(backup_created)}")
+            print(f"   python label_pizza/manage_db.py --mode restore --backup-dir {backup_dir} --backup-file {os.path.basename(backup_created)}")
         return False
 
 def check_database_is_empty(db_url: str, force: bool = False) -> bool:
@@ -766,25 +1055,25 @@ def main():
         epilog="""
 Examples:
   # Safe initialization
-  python label_pizza/init_or_reset_db.py --mode init --email admin@example.com --password mypass --user-id "Admin"
+  python label_pizza/manage_db.py --mode init --email admin@example.com --password mypass --user-id "Admin"
   
   # Nuclear reset with automatic backup (RECOMMENDED)
-  python label_pizza/init_or_reset_db.py --mode reset --email admin@example.com --password mypass --user-id "Admin" --auto-backup
+  python label_pizza/manage_db.py --mode reset --email admin@example.com --password mypass --user-id "Admin" --auto-backup
   
   # Nuclear reset with custom backup directory
-  python label_pizza/init_or_reset_db.py --mode reset --email admin@example.com --password mypass --user-id "Admin" --auto-backup --backup-dir ./my_backups --compress
+  python label_pizza/manage_db.py --mode reset --email admin@example.com --password mypass --user-id "Admin" --auto-backup --backup-dir ./my_backups --compress
   
   # Nuclear reset with specific backup filename
-  python label_pizza/init_or_reset_db.py --mode reset --email admin@example.com --password mypass --user-id "Admin" --auto-backup --backup-dir ./backups --backup-file nuclear_backup.sql.gz
+  python label_pizza/manage_db.py --mode reset --email admin@example.com --password mypass --user-id "Admin" --auto-backup --backup-dir ./backups --backup-file nuclear_backup.sql.gz
   
   # Restore from backup (filename + backup dir)
-  python label_pizza/init_or_reset_db.py --mode restore --backup-dir ./backups --backup-file nuclear_backup.sql.gz --email admin@example.com --password mypass --user-id "Admin"
+  python label_pizza/manage_db.py --mode restore --backup-dir ./backups --backup-file nuclear_backup.sql.gz --email admin@example.com --password mypass --user-id "Admin"
   
   # Restore from backup (full path)
-  python label_pizza/init_or_reset_db.py --mode restore --backup-file ./backups/nuclear_backup.sql.gz --email admin@example.com --password mypass --user-id "Admin"
+  python label_pizza/manage_db.py --mode restore --backup-file ./backups/nuclear_backup.sql.gz --email admin@example.com --password mypass --user-id "Admin"
   
   # Force nuclear operations (skip confirmations)
-  python label_pizza/init_or_reset_db.py --mode reset --email admin@example.com --password mypass --user-id "Admin" --auto-backup --force
+  python label_pizza/manage_db.py --mode reset --email admin@example.com --password mypass --user-id "Admin" --auto-backup --force
 
 Nuclear Improvements:
   - Uses DROP TABLE CASCADE for every single table individually

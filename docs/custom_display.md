@@ -27,7 +27,7 @@ You can explore this feature in one of two ways:
 **Before you begin**, you should back up your current database (if you’ve already been using Label Pizza) and reset the database with the following command:
 
 ```bash
-python label_pizza/init_or_reset_db.py \
+python label_pizza/manage_db.py \
   --auto-backup \
   --mode reset \
   --database-url-name DBURL \

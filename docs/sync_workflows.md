@@ -20,7 +20,7 @@ Now that you understand the key components of Label Pizza (videos, users, questi
 1. **Initialize the database once and seed the first admin account**
 
    ```bash
-   python label_pizza/init_or_reset_db.py \
+   python label_pizza/manage_db.py \
        --mode init \
        --database-url-name DBURL \
        --email admin1@example.com \
@@ -64,9 +64,9 @@ Want to save your current work or start over from a blank database? Use the comm
 
 | Action                                                       | One-liner to run                                             | Result                                                       |
 | ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ |
-| **Create a backup**                                          | `python label_pizza/init_or_reset_db.py --mode backup --backup-file my_sql.sql.gz` | Saves `./backups/my_sql.sql.gz` with every table.            |
-| **Reset the database**<br>(nuclear option, makes its own backup) | `python label_pizza/init_or_reset_db.py --database-url-name DBURL --mode reset --auto-backup --backup-file my_sql.sql.gz --email admin1@example.com --password admin111 --user-id "Admin 1"` | Backs up first, then drops every table and recreates them from scratch (all tables start empty). |
-| **Restore from backup**                                      | `python label_pizza/init_or_reset_db.py --database-url-name DBURL --mode restore --backup-file my_sql.sql.gz --email admin1@example.com --password admin111 --user-id "Admin 1"` | Loads `my_sql.sql.gz` into a freshly reset database, repopulating all tables with the saved data. |
+| **Create a backup**                                          | `python label_pizza/manage_db.py --mode backup --backup-file my_sql.sql.gz` | Saves `./backups/my_sql.sql.gz` with every table.            |
+| **Reset the database**<br>(nuclear option, makes its own backup) | `python label_pizza/manage_db.py --database-url-name DBURL --mode reset --auto-backup --backup-file my_sql.sql.gz --email admin1@example.com --password admin111 --user-id "Admin 1"` | Backs up first, then drops every table and recreates them from scratch (all tables start empty). |
+| **Restore from backup**                                      | `python label_pizza/manage_db.py --database-url-name DBURL --mode restore --backup-file my_sql.sql.gz --email admin1@example.com --password admin111 --user-id "Admin 1"` | Loads `my_sql.sql.gz` into a freshly reset database, repopulating all tables with the saved data. |
 
 ### Syncing the database
 
@@ -83,6 +83,10 @@ Throughout your work, you can always synchronize the database—adding new items
 * **Web UI** → most day-to-day quick operations (e.g., one user, one video, one project assignment).
 * **`sync_from_folder.py`** → load the demo, start a fresh workspace, or migrate an entire dataset the first time.
 * **`sync_utils.py` helpers** → large or repeatable work once you’re up and running.
+
+> **Note:** Most items in Label Pizza use a fixed identifier (e.g., `video_uid`, `user_id`, `project_name`, `schema_name`, etc.) and **cannot be renamed** once created. In most cases, you can simply update the display name shown in the UI (e.g., `display_text` for a question). But if you truly need to change the identifier, you can use the rename APIs described in **[admin_override.md](admin_override.md)**.
+
+> **Warning:** This guide only supports **soft deletion** using `is_active=False`, which archives the item without removing its records. If you need to **hard delete** items—such as removing a video from all projects or deleting a question group from a schema—see **[admin_override.md](admin_override.md)** for details.
 
 
 ## Customizing your sync workflow with `sync_utils.py`
@@ -177,7 +181,7 @@ Some steps depend on earlier ones, so we recommend running the commands in the o
 **Before you begin**, make sure to back up your current database (if you’ve already been using Label Pizza) and reset the database with the following command:
 
 ```bash
-python label_pizza/init_or_reset_db.py \
+python label_pizza/manage_db.py \
   --auto-backup \
   --mode reset \
   --database-url-name DBURL \
@@ -600,8 +604,9 @@ projects_data = [
     "schema_name": "Questions about Humans",   # must exist in the database
     "description": "Test project for human questions (Updated)",   # you could only update the description
     "is_active": True,                         # keep this True (set to False if you want to archive the project)
-    "videos": [
-      "human.mp4"
+    "videos": [ # You cannot add or remove videos from a project
+      "human.mp4",
+      "pizza.mp4"
     ]
   }
 ]

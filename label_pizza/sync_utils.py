@@ -196,14 +196,12 @@ def _update_single_video(video_data: Dict) -> Tuple[str, bool, Optional[str]]:
                 session=sess,
             )
             
-            # Handle archive status if present
-            if "is_archived" in video_data:
-                rec = VideoService.get_video_by_uid(video_data["video_uid"], sess)
-                if rec and video_data["is_archived"] != rec.is_archived:
-                    if video_data["is_archived"]:
-                        VideoService.archive_video(rec.id, sess)
-                    else:
-                        VideoService.unarchive_video(rec.id, sess)
+            rec = VideoService.get_video_by_uid(video_data["video_uid"], sess)
+            if rec and video_data["is_archived"] != rec.is_archived:
+                if video_data["is_archived"]:
+                    VideoService.archive_video(rec.id, sess)
+                else:
+                    VideoService.unarchive_video(rec.id, sess)
             
             return video_data["video_uid"], True, None
         except Exception as e:
@@ -312,28 +310,6 @@ def sync_videos(
     
     print(f"\n🚀 Starting video sync pipeline with {len(videos_data)} videos...")
     
-    # Check for duplicate video_uid values first
-    print("\n🔍 Checking for duplicate video_uid values...")
-    video_uids = []
-    duplicates = []
-    
-    for idx, item in enumerate(videos_data, 1):
-        # Basic check that video_uid exists before processing
-        if "video_uid" not in item:
-            raise ValueError(f"Entry #{idx} missing required field: video_uid")
-        
-        video_uid = item["video_uid"]
-        if video_uid in video_uids:
-            duplicates.append((video_uid, idx))
-        else:
-            video_uids.append(video_uid)
-    
-    if duplicates:
-        duplicate_info = [f"video_uid '{uid}' at entry #{idx}" for uid, idx in duplicates]
-        raise ValueError(f"Duplicate video_uid values found: {', '.join(duplicate_info)}")
-    
-    print(f"✅ No duplicates found - all {len(video_uids)} video_uid values are unique")
-
     # Validate & enrich each record with progress bar
     processed: List[Dict] = []
     with tqdm(total=len(videos_data), desc="Validating video data", unit="video") as pbar:
@@ -353,12 +329,38 @@ def sync_videos(
                 
                 raise ValueError(f"Entry #{idx} invalid fields: {', '.join(error_parts)}")
 
-            # optional active → archived conversion
-            if "is_active" in item:
-                item["is_archived"] = not item.pop("is_active")
+            item["is_archived"] = not item.pop("is_active")
 
             processed.append(item)
             pbar.update(1)
+    
+    # Check for duplicate video_uid values first
+    print("\n🔍 Checking for duplicate video_uid and urls values...")
+    urls = []
+    video_uids = []
+    uid_duplicates = []
+    url_duplicates = []
+    
+    for idx, item in enumerate(processed, 1):
+        video_uid = item["video_uid"]
+        url = item["url"]
+        if video_uid in video_uids:
+            uid_duplicates.append((video_uid, idx))
+        else:
+            video_uids.append(video_uid)
+        if url in urls:
+            url_duplicates.append((url, idx))
+        else:
+            urls.append(url)
+    
+    if uid_duplicates:
+        duplicate_info = [f"video_uid '{uid}' at entry #{idx}" for uid, idx in uid_duplicates]
+        raise ValueError(f"Duplicate video_uid values found: {', '.join(duplicate_info)}")
+    if url_duplicates:
+        duplicate_info = [f"url '{url}' at entry #{idx}" for url, idx in url_duplicates]
+        raise ValueError(f"Duplicate url values found: {', '.join(duplicate_info)}")
+    
+    print(f"✅ No duplicates found - all {len(video_uids)} video_uid values and {len(urls)} url values are unique")
 
     # Decide add vs update with a single read-only look‑up
     print("\n📊 Categorizing videos...")
@@ -496,27 +498,37 @@ def update_users(users_data: List[Dict]) -> None:
                     changes = []
                     
                     # Check email
-                    if "email" in user and user["email"] != user_rec.email:
+                    if user["email"] != user_rec.email:
+                        AuthService.verify_update_user_email(user_rec.id, user["email"], session)
                         needs_update = True
                         changes.append("email")
                     
                     # Check password (we can't compare hashes, so we'll update if provided)
-                    if "password" in user and user["password"] != user_rec.password_hash:
+                    if user["password"] != user_rec.password_hash:
+                        
+                        AuthService.verify_update_user_password(user_rec.id, user["password"], session)
+                        
                         needs_update = True
                         changes.append("password")
                     
                     # Check user_type
-                    if "user_type" in user and user["user_type"] != user_rec.user_type:
+                    if user["user_type"] != user_rec.user_type:
+                        
+                        AuthService.verify_update_user_role(user_rec.id, user["user_type"], session)
+                        
                         needs_update = True
                         changes.append("user_type")
                     
                     # Check user_id
-                    if "user_id" in user and user["user_id"] != user_rec.user_id_str:
+                    if user["user_id"] != user_rec.user_id_str:
+                        
+                        AuthService.verify_update_user_id(user_rec.id, user["user_id"], session)
+                        
                         needs_update = True
                         changes.append("user_id")
                     
                     # Check archive status
-                    if "is_archived" in user and user["is_archived"] != user_rec.is_archived:
+                    if user["is_archived"] != user_rec.is_archived:
                         needs_update = True
                         changes.append("archive_status")
                     
@@ -670,7 +682,7 @@ def sync_users(
         password = user["password"]
         if is_model:
             # Model users: empty string or None gets converted to placeholder
-            password = "model_user_no_password" if password is None or str(password).strip() == "" else str(password).strip()
+            password = "" if password is None or str(password).strip() == "" else str(password).strip()
         else:
             if password is None or not str(password).strip():
                 raise ValueError(f"Entry #{idx}: password cannot be empty for {user['user_type']} user")
@@ -678,8 +690,7 @@ def sync_users(
         user["password"] = password
         
         # Convert is_active → is_archived
-        if "is_active" in user:
-            user["is_archived"] = not user.pop("is_active")
+        user["is_archived"] = not user.pop("is_active")
     
     if duplicates:
         raise ValueError(f"Duplicates found: {'; '.join(duplicates)}")
@@ -737,29 +748,30 @@ def sync_users(
 # Core operations                                                             #
 # --------------------------------------------------------------------------- #
 
-def add_question_groups(groups: List[Tuple[str, Dict]]) -> Tuple[List[Dict], List[str]]:
+def add_question_groups(groups: List[Tuple[str, Dict]], question_text_to_id: Dict[str, int]) -> List[Dict]:
     """Create new question groups with full verification and atomic transaction.
     
     Args:
         groups: List of (filename, group_dict) tuples with question group data
+        question_text_to_id: Mapping from question text to question ID (all questions should already exist)
         
     Returns:
-        Tuple of (created_groups, questions_created) with group info and new question texts
+        List of created group information
         
     Raises:
         TypeError: If groups is not a list of tuples
         ValueError: If groups already exist or verification fails
         
     Note:
-        For existing questions, only display_text, display_values, option_weights, 
-        default_option, and archive status can be modified. New questions will be 
-        created with all provided properties.
+        All questions must already exist in the database. This function only handles group creation.
     """
     if not isinstance(groups, list):
         raise TypeError("groups must be list[(filename, dict)]")
 
+    if not isinstance(question_text_to_id, dict):
+        raise TypeError("question_text_to_id must be a dictionary")
+
     created: List[Dict] = []
-    questions_created: List[str] = []
 
     with label_pizza.db.SessionLocal() as sess:
         # ── Phase 0: duplicate title check (cheap, read‑only) ───────────────
@@ -777,188 +789,63 @@ def add_question_groups(groups: List[Tuple[str, Dict]]) -> Tuple[List[Dict], Lis
         if dup_titles:
             raise ValueError("Add aborted – already in DB: " + ", ".join(dup_titles))
 
-        # ── Phase 1: prepare each group (create missing questions & track existing) ──────────
-        prepared: List[Tuple[Dict, List[int], List[Dict]]] = []  # (group_data, question_ids, question_updates)
-        for _, g in groups:
-            q_ids: List[int] = []
-            question_updates: List[Dict] = []  # Track questions that need updates
+        # ── Phase 1: Process each group ──────────────────────────────────────
+        for _, group_data in groups:
+            # Build question IDs list for this group
+            question_ids = []
+            for question_data in group_data.get("questions", []):
+                question_text = question_data["text"]
+                if question_text not in question_text_to_id:
+                    raise ValueError(f"Question '{question_text}' not found in question mapping - questions must be processed first")
+                question_ids.append(question_text_to_id[question_text])
             
-            for q in g["questions"]:
-                try:
-                    q_rec = QuestionService.get_question_by_text(q["text"], sess)
-                    q_ids.append(q_rec["id"])
-                    
-                    # Check if existing question needs updates
-                    needs_update = False
-                    update_types = []
-                    
-                    # Check display_text
-                    new_display_text = q.get("display_text", q["text"])
-                    if new_display_text != q_rec["display_text"]:
-                        needs_update = True
-                        update_types.append("display_text")
-                    
-                    # Check default_option for ALL question types (not just single-choice)
-                    if "default_option" in q:
-                        new_default = q["default_option"]
-                        current_default = q_rec.get("default_option")
-                        if new_default is not current_default and new_default != current_default:
-                            needs_update = True
-                            update_types.append("default_option")
-                    
-                    # For single-choice questions, check other properties
-                    if q_rec["type"] == "single":
-                        # Check display_values - use 'is not None' to allow empty lists
-                        new_display_values = q.get("display_values")
-                        if new_display_values is not None and new_display_values != q_rec.get("display_values"):
-                            needs_update = True
-                            update_types.append("display_values")
-                        
-                        # Check option_weights - use 'is not None' to allow empty lists
-                        new_option_weights = q.get("option_weights")
-                        if new_option_weights is not None and new_option_weights != q_rec.get("option_weights"):
-                            needs_update = True
-                            update_types.append("option_weights")
-                    
-                    elif q_rec["type"] == "description":
-                        # For description questions, check default_value (or whatever field stores the default)
-                        if "default_value" in q:
-                            new_default_value = q["default_value"]
-                            current_default_value = q_rec.get("default_value")
-                            if new_default_value is not current_default_value and new_default_value != current_default_value:
-                                needs_update = True
-                                update_types.append("default_value")
-                    
-                    if needs_update:
-                        question_updates.append({
-                            "question_id": q_rec["id"],
-                            "question_text": q["text"],
-                            "question_data": q,
-                            "changes": update_types
-                        })
-                        
-                except ValueError:
-                    # Question doesn't exist, create it
-                    q_rec = QuestionService.add_question(
-                        text=q["text"],
-                        qtype=q["qtype"],
-                        options=q.get("options"),
-                        default=q.get("default_option"),
-                        display_values=q.get("display_values"),
-                        display_text=q.get("display_text"),
-                        option_weights=q.get("option_weights"),
-                        session=sess,
-                    )
-                    questions_created.append(q["text"])
-                    q_ids.append(q_rec.id)
-            
-            prepared.append((g, q_ids, question_updates))
-
-        # ── Phase 2: verify ALL questions first ────────────────────────────
-        for g, q_ids, question_updates in prepared:
-            for q_update in question_updates:
-                q_data = q_update["question_data"]
-                q_id = q_update["question_id"]
-                
-                # Additional validation: For auto-submit groups, don't allow None default values
-                is_auto_submit = g.get("is_auto_submit", False)
-                if is_auto_submit and "default_option" in q_update["changes"]:
-                    new_default = q_data.get("default_option")
-                    if new_default is None:
+            # Check for auto-submit validation
+            is_auto_submit = group_data.get("is_auto_submit", False)
+            if is_auto_submit:
+                for question_data in group_data.get("questions", []):
+                    if question_data.get("default_option") is None:
                         raise ValueError(
-                            f"Cannot set default_option to None for question '{q_data['text']}' "
-                            f"in auto-submit group '{g['title']}'. Auto-submit groups require non-None default values."
+                            f"Cannot set default_option to None for question '{question_data['text']}' "
+                            f"in auto-submit group '{group_data['title']}'. Auto-submit groups require non-None default values."
                         )
-                
-                # Verify question edit (this will raise ValueError if invalid)
-                QuestionService.verify_edit_question(
-                    question_id=q_id,
-                    new_display_text=q_data.get("display_text", q_data["text"]),
-                    new_opts=q_data.get("options"),
-                    new_default=q_data.get("default_option"),
-                    session=sess,
-                    new_display_values=q_data.get("display_values"),
-                    new_option_weights=q_data.get("option_weights")
-                )
-
-        # ── Phase 3: apply ALL question edits after verification ───────────
-        for g, q_ids, question_updates in prepared:
-            for q_update in question_updates:
-                q_data = q_update["question_data"]
-                q_id = q_update["question_id"]
-                
-                # Handle question edits (skip if no status changed)
-                if any(q_update["changes"]):
-                    QuestionService.edit_question(
-                        question_id=q_id,
-                        new_display_text=q_data.get("display_text", q_data["text"]),
-                        new_opts=q_data.get("options"),
-                        new_default=q_data.get("default_option"),
-                        session=sess,
-                        new_display_values=q_data.get("display_values"),
-                        new_option_weights=q_data.get("option_weights")
-                    )
-
-        # ── Phase 4: verify ALL groups after questions are updated ──────────
-        for g, q_ids, question_updates in prepared:
+            
+            # Verify group
             QuestionGroupService.verify_create_group(
-                title=g["title"],
-                display_title=g.get("display_title", g["title"]),
-                description=g["description"],
-                is_reusable=g.get("is_reusable", True),
-                question_ids=q_ids,
-                verification_function=g.get("verification_function"),
-                is_auto_submit=g.get("is_auto_submit", False),
+                title=group_data["title"],
+                display_title=group_data.get("display_title", group_data["title"]),
+                description=group_data["description"],
+                is_reusable=group_data.get("is_reusable", True),
+                question_ids=question_ids,
+                verification_function=group_data.get("verification_function"),
+                is_auto_submit=group_data.get("is_auto_submit", False),
                 session=sess,
             )
-
-        # ── Phase 5: create groups after all verifications passed ──────────
-        for g, q_ids, question_updates in prepared:
-            # Create the group
+            
+            # Create group
             grp = QuestionGroupService.create_group(
-                title=g["title"],
-                display_title=g.get("display_title", g["title"]),
-                description=g["description"],
-                is_reusable=g.get("is_reusable", True),
-                question_ids=q_ids,
-                verification_function=g.get("verification_function"),
-                is_auto_submit=g.get("is_auto_submit", False),
+                title=group_data["title"],
+                display_title=group_data.get("display_title", group_data["title"]),
+                description=group_data["description"],
+                is_reusable=group_data.get("is_reusable", True),
+                question_ids=question_ids,
+                verification_function=group_data.get("verification_function"),
+                is_auto_submit=group_data.get("is_auto_submit", False),
                 session=sess,
             )
             
-            # Prepare creation summary
-            creation_info = {"title": g["title"], "id": grp.id}
-            if question_updates:
-                # Add info about question updates
-                q_summaries = []
-                for q_update in question_updates:
-                    q_text = q_update["question_text"][:50] + "..." if len(q_update["question_text"]) > 50 else q_update["question_text"]
-                    q_summaries.append(f"'{q_text}' ({', '.join(q_update['changes'])})")
-                creation_info["question_updates"] = q_summaries
-            
-            created.append(creation_info)
+            created.append({"title": group_data["title"], "id": grp.id})
 
         sess.commit()
     
-    # Enhanced logging
-    print(f"✅ Created {len(created)} group(s)")
-    for item in created:
-        base_msg = f"   • {item['title']}"
-        if "question_updates" in item:
-            base_msg += f" (updated existing questions: {'; '.join(item['question_updates'])})"
-        print(base_msg)
-    
-    if questions_created:
-        print(f"📝 Created {len(questions_created)} new question(s)")
-    
-    return created, list(set(questions_created))
+    return created
 
 
-def update_question_groups(groups: List[Tuple[str, Dict]]) -> List[Dict]:
+def update_question_groups(groups: List[Tuple[str, Dict]], question_text_to_id: Dict[str, int]) -> List[Dict]:
     """Update existing question groups with full verification and atomic transaction.
     
     Args:
         groups: List of (filename, group_dict) tuples with question group data
+        question_text_to_id: Mapping from question text to question ID (all questions should already exist)
         
     Returns:
         List of updated group information with changes made
@@ -968,12 +855,14 @@ def update_question_groups(groups: List[Tuple[str, Dict]]) -> List[Dict]:
         ValueError: If groups not found or verification fails
         
     Note:
-        For questions within groups, only display_text, display_values, option_weights, 
-        default_option, and archive status can be modified. The question text and 
-        options cannot be changed (options can only be added, not removed).
+        All questions must already exist in the database. This function only handles group updates.
+        The question set for each group must remain the same (same questions, possibly different order).
     """
     if not isinstance(groups, list):
         raise TypeError("groups must be list[(filename, dict)]")
+
+    if not isinstance(question_text_to_id, dict):
+        raise TypeError("question_text_to_id must be a dictionary")
 
     updated: List[Dict] = []
     skipped: List[Dict] = []
@@ -994,263 +883,122 @@ def update_question_groups(groups: List[Tuple[str, Dict]]) -> List[Dict]:
         if missing:
             raise ValueError("Update aborted – not found in DB: " + ", ".join(missing))
 
-        # ── Phase 1: prepare each group and validate question sets ──────────
-        prepared: List[Tuple[Dict, List[int], object]] = []  # (group_data, question_ids, group_record)
-        missing_questions = []
-        question_set_errors = []
-        duplicate_errors = []
-        
-        for _, g in groups:
-            grp = QuestionGroupService.get_group_by_name(g["title"], sess)
-            q_ids: List[int] = []
-            question_texts: List[str] = []
+        # ── Phase 1: Process each group ──────────────────────────────────────
+        for _, group_data in groups:
+            grp = QuestionGroupService.get_group_by_name(group_data["title"], sess)
             
-            # Get question IDs from the group data - all questions must exist
-            for q in g.get("questions", []):
-                try:
-                    q_rec = QuestionService.get_question_by_text(q["text"], sess)
-                    q_ids.append(q_rec["id"])
-                    question_texts.append(q["text"])
-                except ValueError as err:
-                    # Only treat "not found" as missing, re-raise other errors
-                    if "not found" not in str(err).lower():
-                        raise
-                    # Question doesn't exist - collect for error reporting
-                    missing_questions.append(q["text"])
+            # Build question IDs list for this group
+            question_ids = []
+            for question_data in group_data.get("questions", []):
+                question_text = question_data["text"]
+                if question_text not in question_text_to_id:
+                    raise ValueError(f"Question '{question_text}' not found in question mapping - questions must be processed first")
+                question_ids.append(question_text_to_id[question_text])
             
-            # Check for duplicates in new question list
-            if len(q_ids) != len(set(q_ids)):
-                # Find which questions are duplicated
+            # Check for duplicates in question list
+            if len(question_ids) != len(set(question_ids)):
+                question_texts = [q["text"] for q in group_data.get("questions", [])]
                 from collections import Counter
                 question_counter = Counter(question_texts)
                 duplicates = [text for text, count in question_counter.items() if count > 1]
-                duplicate_errors.append(f"Group '{g['title']}': Duplicate questions found: {', '.join(duplicates)}")
+                raise ValueError(f"Group '{group_data['title']}': Duplicate questions found: {', '.join(duplicates)}")
             
-            # Check if question set has changed (before any database modifications)
+            # Check if question set has changed
             current_question_ids = set(QuestionGroupService.get_question_order(grp.id, sess))
-            new_question_ids = set(q_ids)
+            new_question_ids = set(question_ids)
             
             if current_question_ids != new_question_ids:
                 missing_questions_in_set = current_question_ids - new_question_ids
                 extra_questions_in_set = new_question_ids - current_question_ids
-                question_set_errors.append(
-                    f"Group '{g['title']}': Question set must remain the same. "
+                raise ValueError(
+                    f"Update aborted - Group '{group_data['title']}': Question set must remain the same. "
                     f"Missing questions: {missing_questions_in_set}. "
                     f"Extra questions: {extra_questions_in_set}"
                 )
             
-            prepared.append((g, q_ids, grp))
-        
-        # Check for any missing questions and abort if found
-        if missing_questions:
-            raise ValueError("Update aborted – questions not found in DB: " + ", ".join(missing_questions))
-        
-        # Check for duplicates and abort if found
-        if duplicate_errors:
-            raise ValueError("Update aborted – duplicate questions: " + "; ".join(duplicate_errors))
-        
-        # Check for question set changes and abort if found
-        if question_set_errors:
-            raise ValueError("Update aborted – question sets changed: " + "; ".join(question_set_errors))
-
-        # ── Phase 2: check for differences and skip if no changes ───────────
-        to_update = []
-        for g, q_ids, grp in prepared:
+            # Check what needs to be updated
             needs_update = False
             changes = []
             
             # Check display title
-            new_display_title = g.get("display_title", g["title"])
+            new_display_title = group_data.get("display_title", group_data["title"])
             if new_display_title != grp.display_title:
                 needs_update = True
                 changes.append("display_title")
             
             # Check description
-            if g["description"] != grp.description:
+            if group_data["description"] != grp.description:
                 needs_update = True
                 changes.append("description")
             
             # Check is_reusable
-            new_is_reusable = g.get("is_reusable", True)
+            new_is_reusable = group_data.get("is_reusable", True)
             if new_is_reusable != grp.is_reusable:
                 needs_update = True
                 changes.append("is_reusable")
             
             # Check verification_function
-            new_verification_function = g.get("verification_function")
+            new_verification_function = group_data.get("verification_function")
             if new_verification_function != grp.verification_function:
                 needs_update = True
                 changes.append("verification_function")
             
             # Check is_auto_submit
-            new_is_auto_submit = g.get("is_auto_submit", False)
+            new_is_auto_submit = group_data.get("is_auto_submit", False)
             if new_is_auto_submit != grp.is_auto_submit:
                 needs_update = True
                 changes.append("is_auto_submit")
             
             # Check question order
             current_order = QuestionGroupService.get_question_order(grp.id, sess)
-            if current_order != q_ids:
+            if current_order != question_ids:
                 needs_update = True
                 changes.append("question_order")
             
-            # Check individual question changes
-            question_changes = []
-            for i, q_data in enumerate(g.get("questions", [])):
-                q_id = q_ids[i]
-                q_rec = QuestionService.get_question_object_by_id(q_id, sess)
-                
-                # Check for question-level changes
-                q_needs_update = False
-                q_change_types = []
-                
-                # Check display_text
-                new_display_text = q_data.get("display_text", q_data["text"])
-                if new_display_text != q_rec.display_text:
-                    q_needs_update = True
-                    q_change_types.append("display_text")
-                
-                # Check default_option for ALL question types (not just single-choice)
-                if "default_option" in q_data:
-                    new_default = q_data["default_option"]
-                    current_default = q_rec.default_option
-                    if new_default is not current_default and new_default != current_default:
-                        q_needs_update = True
-                        q_change_types.append("default_option")
-                
-                # For single-choice questions, check type-specific properties
-                if q_rec.type == "single":
-                    new_display_values = q_data.get("display_values")
-                    if new_display_values is not None and new_display_values != q_rec.display_values:
-                        q_needs_update = True
-                        q_change_types.append("display_values")
-                    
-                    # Note: We still track option_weights changes even though they're rarely modified
-                    new_option_weights = q_data.get("option_weights")
-                    if new_option_weights is not None and new_option_weights != q_rec.option_weights:
-                        q_needs_update = True
-                        q_change_types.append("option_weights")
-                
-                elif q_rec.type == "description":
-                    # For description questions, only display_text and default_option can be changed
-                    # (both are already checked above)
-                    pass
-                
-                if q_needs_update:
-                    question_changes.append({
-                        "question_id": q_id,
-                        "question_text": q_data["text"],
-                        "question_data": q_data,
-                        "changes": q_change_types
-                    })
-                    needs_update = True
+            if not needs_update:
+                skipped.append({"title": group_data["title"], "id": grp.id})
+                continue
             
-            if question_changes:
-                changes.append("questions")
-            
-            if needs_update:
-                to_update.append((g, q_ids, grp, changes, question_changes))
-            else:
-                skipped.append({"title": g["title"], "id": grp.id})
-
-        # ── Phase 3: verify ALL question edits first ──────────────────────
-        for g, q_ids, grp, changes, question_changes in to_update:
-            for q_change in question_changes:
-                q_data = q_change["question_data"]
-                q_id = q_change["question_id"]
-                
-                # Additional validation: For auto-submit groups, don't allow None default values
-                if grp.is_auto_submit and "default_option" in q_change["changes"]:
-                    new_default = q_data.get("default_option")
-                    if new_default is None:
+            # Check for auto-submit validation
+            is_auto_submit = group_data.get("is_auto_submit", False)
+            if is_auto_submit:
+                for question_data in group_data.get("questions", []):
+                    if question_data.get("default_option") is None:
                         raise ValueError(
-                            f"Cannot set default_option to None for question '{q_data['text']}' "
-                            f"in auto-submit group '{g['title']}'. Auto-submit groups require non-None default values."
+                            f"Cannot set default_option to None for question '{question_data['text']}' "
+                            f"in auto-submit group '{group_data['title']}'. Auto-submit groups require non-None default values."
                         )
-                
-                # Verify question edit (this will raise ValueError if invalid)
-                QuestionService.verify_edit_question(
-                    question_id=q_id,
-                    new_display_text=q_data.get("display_text", q_data["text"]),
-                    new_opts=q_data.get("options"),
-                    new_default=q_data.get("default_option"),
-                    session=sess,
-                    new_display_values=q_data.get("display_values"),
-                    new_option_weights=q_data.get("option_weights")
-                )
-
-        # ── Phase 4: apply ALL question edits after verification ───────────
-        for g, q_ids, grp, changes, question_changes in to_update:
-            for q_change in question_changes:
-                q_data = q_change["question_data"]
-                q_id = q_change["question_id"]
-                
-                # Handle question edits (skip if no status changed)
-                if any(q_change["changes"]):
-                    QuestionService.edit_question(
-                        question_id=q_id,
-                        new_display_text=q_data.get("display_text", q_data["text"]),
-                        new_opts=q_data.get("options"),
-                        new_default=q_data.get("default_option"),
-                        session=sess,
-                        new_display_values=q_data.get("display_values"),
-                        new_option_weights=q_data.get("option_weights")
-                    )
-
-        # ── Phase 5: verify ALL group edits after questions are updated ────
-        for g, q_ids, grp, changes, question_changes in to_update:
+            
+            # Verify group update
             QuestionGroupService.verify_edit_group(
                 group_id=grp.id,
-                new_display_title=g.get("display_title", g["title"]),
-                new_description=g["description"],
-                is_reusable=g.get("is_reusable", True),
-                verification_function=g.get("verification_function"),
-                is_auto_submit=g.get("is_auto_submit", False),
+                new_display_title=group_data.get("display_title", group_data["title"]),
+                new_description=group_data["description"],
+                is_reusable=group_data.get("is_reusable", True),
+                verification_function=group_data.get("verification_function"),
+                is_auto_submit=group_data.get("is_auto_submit", False),
                 session=sess,
             )
-
-        # ── Phase 6: apply group edits after all verifications passed ──────
-        for g, q_ids, grp, changes, question_changes in to_update:
-            # Apply group-level changes
+            
+            # Apply group updates
             QuestionGroupService.edit_group(
                 group_id=grp.id,
-                new_display_title=g.get("display_title", g["title"]),
-                new_description=g["description"],
-                is_reusable=g.get("is_reusable", True),
-                verification_function=g.get("verification_function"),
-                is_auto_submit=g.get("is_auto_submit", False),
+                new_display_title=group_data.get("display_title", group_data["title"]),
+                new_description=group_data["description"],
+                is_reusable=group_data.get("is_reusable", True),
+                verification_function=group_data.get("verification_function"),
+                is_auto_submit=group_data.get("is_auto_submit", False),
                 session=sess,
             )
             
             # Handle question order updates
             if "question_order" in changes:
-                QuestionGroupService.update_question_order(grp.id, q_ids, sess)
+                QuestionGroupService.update_question_order(grp.id, question_ids, sess)
             
-            # Prepare detailed change summary
-            change_summary = []
-            for change in changes:
-                if change == "questions":
-                    # Add detail about question changes
-                    q_summaries = []
-                    for q_change in question_changes:
-                        q_text = q_change["question_text"][:50] + "..." if len(q_change["question_text"]) > 50 else q_change["question_text"]
-                        q_summaries.append(f"'{q_text}' ({', '.join(q_change['changes'])})")
-                    change_summary.append(f"questions: {'; '.join(q_summaries)}")
-                else:
-                    change_summary.append(change)
-            
-            updated.append({"title": g["title"], "id": grp.id, "changes": change_summary})
+            updated.append({"title": group_data["title"], "id": grp.id, "changes": changes})
 
         sess.commit()
-    
-    # Print summary
-    if skipped:
-        print(f"⏭️  Skipped {len(skipped)} group(s) (no changes needed)")
-    
-    if updated:
-        print(f"✅ Updated {len(updated)} group(s)")
-        for item in updated:
-            print(f"   • {item['title']}: {', '.join(item['changes'])}")
+
     
     return updated
 
@@ -1283,29 +1031,37 @@ def sync_question_groups(
     if question_groups_folder and question_groups_data:
         raise ValueError("Provide either question_groups_folder or question_groups_data, not both")
 
-    # Load JSON if folder provided
+    # Load data from folder if provided
     if question_groups_folder:
         folder = Path(question_groups_folder)
         if not folder.exists() or not folder.is_dir():
             raise ValueError(f"Invalid folder: {question_groups_folder}")
-
-        json_paths = list(folder.glob("*.json"))
-        question_groups_data = []
         
-        for pth in json_paths:
-            with open(pth, "r") as f:
-                data = json.load(f)
-            if not isinstance(data, dict):
-                raise ValueError(f"{pth.name}: file must contain a JSON object")
-            question_groups_data.append(data)
+        question_groups_data = []
+        for json_path in folder.glob("*.json"):
+            with open(json_path, "r") as f:
+                try:
+                    # Custom hook to detect duplicate keys
+                    def detect_duplicate_keys(pairs):
+                        seen = set()
+                        for key, value in pairs:
+                            if key in seen:
+                                raise ValueError(f"Duplicate key found: '{key}'")
+                            seen.add(key)
+                        return dict(pairs)
+                    
+                    data = json.load(f, object_pairs_hook=detect_duplicate_keys)
+                    if not isinstance(data, dict):
+                        raise ValueError(f"{json_path.name}: file must contain a JSON object")
+                    question_groups_data.append(data)
+                except (json.JSONDecodeError, ValueError) as e:
+                    raise ValueError(f"{json_path.name}: {str(e)}")
 
     if not isinstance(question_groups_data, list):
         raise TypeError("question_groups_data must be a list of dictionaries")
     
-    # Deep copy question_groups_data to avoid modifying the original list
     question_groups_data = deepcopy(question_groups_data)
-
-    print(f"\n🚀 Starting question groups sync pipeline with {len(question_groups_data)} groups...")
+    print(f"\n🚀 Starting sync pipeline with {len(question_groups_data)} groups...")
 
     # Check for duplicate title values
     print("\n🔍 Checking for duplicate title values...")
@@ -1315,7 +1071,7 @@ def sync_question_groups(
     
     for idx, data in enumerate(question_groups_data, 1):
         # Validate required fields
-        required = {"title", "display_title", "description", "is_reusable", "is_auto_submit", "verification_function", "questions", "is_active"}
+        required = {"title", "display_title", "description", "is_reusable", "is_auto_submit", "verification_function", "questions"}
         data_keys = set(data.keys())
 
         if data_keys != required:
@@ -1349,10 +1105,6 @@ def sync_question_groups(
         # Set defaults and normalize
         data.setdefault("display_title", data["title"])
         
-        # Convert is_active → is_archived
-        if "is_active" in data:
-            data["is_archived"] = not data.pop("is_active")
-        
         if not isinstance(data["questions"], list):
             raise ValueError(f"Entry #{idx}: 'questions' must be a list")
         
@@ -1360,49 +1112,177 @@ def sync_question_groups(
 
     print(f"✅ Validation passed for {len(processed)} groups")
 
+    # Collect all unique questions from all groups
+    all_questions_by_text = {}  # text -> question_data
+    for group_data in processed:
+        for question in group_data["questions"]:
+            question_text = question["text"]
+            if question_text not in all_questions_by_text:
+                all_questions_by_text[question_text] = question
+
     # Classify add vs update with one read-only session
     to_add, to_update = [], []
     with label_pizza.db.SessionLocal() as sess:
-        for g in processed:
-            group_exists = False
+        # Categorize questions: new, existing that need updates, existing unchanged
+        unique_questions_to_add = {}      # text -> question_data (for new questions)
+        unique_questions_to_update = {}   # text -> question_data (for existing questions that need updates)
+        question_text_to_id = {}          # text -> id (for all questions, existing + new)
+        
+        for question_text, question_data in all_questions_by_text.items():
             try:
-                QuestionGroupService.get_group_by_name(g["title"], sess)
-                group_exists = True
+                # Try to find existing question
+                q_rec = QuestionService.get_question_by_text(question_text, sess)
+                question_text_to_id[question_text] = q_rec["id"]
+                
+                # Check if this existing question needs updates
+                needs_update = False
+                
+                # Check display_text
+                new_display_text = question_data.get("display_text", question_text)
+                if new_display_text != q_rec["display_text"]:
+                    needs_update = True
+                
+                # Check default_option
+                if "default_option" in question_data:
+                    new_default = question_data["default_option"]
+                    current_default = q_rec.get("default_option")
+                    if new_default != current_default:
+                        needs_update = True
+                
+                # For single-choice questions, check other properties
+                if q_rec["type"] == "single":
+                    new_display_values = question_data.get("display_values")
+                    if new_display_values is not None and new_display_values != q_rec.get("display_values"):
+                        needs_update = True
+                    
+                    new_option_weights = question_data.get("option_weights")
+                    if new_option_weights is not None and new_option_weights != q_rec.get("option_weights"):
+                        needs_update = True
+                
+                if needs_update:
+                    unique_questions_to_update[question_text] = question_data
+                    
             except ValueError as err:
-                # Only treat "not found" as non-existence, re-raise other errors
                 if "not found" not in str(err).lower():
                     raise
-                # Group doesn't exist
-                group_exists = False
-            
-            if group_exists:
-                to_update.append(g)
-            else:
-                to_add.append(g)
+                # Question doesn't exist, needs to be created
+                unique_questions_to_add[question_text] = question_data
+        
+        print(f"  📝 {len(unique_questions_to_add)} questions to create")
+        print(f"  🔄 {len(unique_questions_to_update)} questions to update")
+        print(f"  ✅ {len(question_text_to_id) - len(unique_questions_to_update)} questions unchanged")
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # STEP 2: PROCESS ALL QUESTIONS (ADD AND UPDATE)
+        # ═══════════════════════════════════════════════════════════════════
+        
+        print("🔨 Step 2: Processing all questions...")
+        
+        # Verify all new questions
+        for question_text, q_data in unique_questions_to_add.items():
+            QuestionService.verify_add_question(
+                text=q_data["text"],
+                qtype=q_data["qtype"],
+                options=q_data.get("options"),
+                default=q_data.get("default_option"),
+                display_values=q_data.get("display_values"),
+                display_text=q_data.get("display_text"),
+                option_weights=q_data.get("option_weights"),
+                session=sess
+            )
+        
+        # Verify all question updates
+        for question_text, q_data in unique_questions_to_update.items():
+            q_id = question_text_to_id[question_text]
+            QuestionService.verify_edit_question(
+                question_id=q_id,
+                new_display_text=q_data.get("display_text", q_data["text"]),
+                new_opts=q_data.get("options"),
+                new_default=q_data.get("default_option"),
+                session=sess,
+                new_display_values=q_data.get("display_values"),
+                new_option_weights=q_data.get("option_weights")
+            )
+        
+        # Create all new questions
+        questions_created = []
+        for question_text, q_data in unique_questions_to_add.items():
+            q_rec = QuestionService.add_question(
+                text=q_data["text"],
+                qtype=q_data["qtype"],
+                options=q_data.get("options"),
+                default=q_data.get("default_option"),
+                display_values=q_data.get("display_values"),
+                display_text=q_data.get("display_text"),
+                option_weights=q_data.get("option_weights"),
+                session=sess,
+            )
+            question_text_to_id[question_text] = q_rec.id
+            questions_created.append(question_text)
+        
+        # Update all existing questions
+        for question_text, q_data in unique_questions_to_update.items():
+            q_id = question_text_to_id[question_text]
+            QuestionService.edit_question(
+                question_id=q_id,
+                new_display_text=q_data.get("display_text", q_data["text"]),
+                new_opts=q_data.get("options"),
+                new_default=q_data.get("default_option"),
+                session=sess,
+                new_display_values=q_data.get("display_values"),
+                new_option_weights=q_data.get("option_weights")
+            )
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # STEP 3: PROCESS ALL QUESTION GROUPS (ADD AND UPDATE)
+        # ═══════════════════════════════════════════════════════════════════
+        
+        print("🏗️  Step 3: Processing all question groups...")
+        
+        # Classify groups: add vs update
+        groups_to_add = []
+        groups_to_update = []
+        
+        for group_data in question_groups_data:
+            try:
+                QuestionGroupService.get_group_by_name(group_data["title"], sess)
+                groups_to_update.append(group_data)
+            except ValueError as err:
+                if "not found" not in str(err).lower():
+                    raise
+                groups_to_add.append(group_data)
+        
+        print(f"  ➕ {len(groups_to_add)} groups to create")
+        print(f"  🔄 {len(groups_to_update)} groups to update")
+        
+        # Process groups to add
+        created_groups = []
+        if groups_to_add:
+            add_data = [(f"item_{i}", group) for i, group in enumerate(groups_to_add)]
+            created_groups = add_question_groups(add_data, question_text_to_id)
+        
+        # Process groups to update  
+        updated_groups = []
+        if groups_to_update:
+            update_data = [(f"item_{i}", group) for i, group in enumerate(groups_to_update)]
+            updated_groups = update_question_groups(update_data, question_text_to_id)
 
-    print(f"📊 {len(to_add)} to add · {len(to_update)} to update")
+        sess.commit()
 
-    # Execute operations
-    created = []
-    updated = []
-    questions_created = []
+    # Final summary
+    print("🎉 Sync pipeline complete!")
+    print(f"   • Questions created: {len(questions_created)}")
+    print(f"   • Questions updated: {len(unique_questions_to_update)}")
+    print(f"   • Groups created: {len(created_groups)}")
+    print(f"   • Groups updated: {len(updated_groups)}")
     
-    if to_add:
-        # Convert to the format expected by add_question_groups
-        add_data = [(f"item_{i}", g) for i, g in enumerate(to_add)]
-        c, qc = add_question_groups(add_data)
-        created.extend(c)
-        questions_created.extend(qc)
+    if created_groups:
+        for group in created_groups:
+            print(f"     ➕ Created: {group['title']}")
     
-    if to_update:
-        # Convert to the format expected by update_question_groups
-        update_data = [(f"item_{i}", g) for i, g in enumerate(to_update)]
-        updated.extend(update_question_groups(update_data))
-
-    print("🎉 Question-group pipeline complete")
-    print(f"   • Groups created: {len(created)}")
-    print(f"   • Groups updated: {len(updated)}")
-    print(f"   • New questions:  {len(questions_created)}")
+    if updated_groups:
+        for group in updated_groups:
+            print(f"     🔄 Updated: {group['title']} ({', '.join(group['changes'])})")
 
 # --------------------------------------------------------------------------- #
 # Core operations                                                             #
@@ -1689,23 +1569,6 @@ def sync_schemas(*, schemas_path: str | Path | None = None, schemas_data: List[D
     schema_names = []
     schema_name_duplicates = []
     
-    for idx, schema in enumerate(schemas_data, 1):
-        # Basic check that schema_name exists before processing duplicates
-        if "schema_name" not in schema:
-            raise ValueError(f"Entry #{idx} missing required field: schema_name")
-        
-        schema_name = schema["schema_name"]
-        if schema_name in schema_names:
-            schema_name_duplicates.append((schema_name, idx))
-        else:
-            schema_names.append(schema_name)
-    
-    if schema_name_duplicates:
-        duplicate_info = [f"schema_name '{name}' at entry #{idx}" for name, idx in schema_name_duplicates]
-        raise ValueError(f"Duplicate schema_name values found: {', '.join(duplicate_info)}")
-    
-    print(f"✅ No duplicates found - all {len(schema_names)} schema_name values are unique")
-
     processed: List[Dict] = []
     for idx, s in enumerate(schemas_data, 1):
         required = {"schema_name", "question_group_names", "instructions_url", "has_custom_display", "is_active"}
@@ -1724,9 +1587,21 @@ def sync_schemas(*, schemas_path: str | Path | None = None, schemas_data: List[D
             raise ValueError(f"Entry #{idx} {', '.join(error_parts)}")
         if not isinstance(s["question_group_names"], list):
             raise ValueError(f"Entry #{idx}: 'question_group_names' must be list")
-        if "is_active" in s:
-            s["is_archived"] = not s.pop("is_active")
+        s["is_archived"] = not s.pop("is_active")
         processed.append(s)
+    
+    for idx, schema in enumerate(processed, 1):
+        schema_name = schema["schema_name"]
+        if schema_name in schema_names:
+            schema_name_duplicates.append((schema_name, idx))
+        else:
+            schema_names.append(schema_name)
+    
+    if schema_name_duplicates:
+        duplicate_info = [f"schema_name '{name}' at entry #{idx}" for name, idx in schema_name_duplicates]
+        raise ValueError(f"Duplicate schema_name values found: {', '.join(duplicate_info)}")
+    
+    print(f"✅ No duplicates found - all {len(schema_names)} schema_name values are unique")
 
     # Decide add vs update ---------------------------------------------------
     to_add, to_update = [], []
@@ -1803,7 +1678,7 @@ def _normalize_video_data(videos: list[Any]) -> Dict[str, List[Dict]]:
                 elif question["type"] == "description":
                     if q.get("custom_question") is None:
                         q["custom_question"] = question["display_text"]
-                
+
                 # Check whether question options are valid
                 if q.get("custom_option") is not None:
                     for opt, value in q.get("custom_option").items():
@@ -1813,8 +1688,6 @@ def _normalize_video_data(videos: list[Any]) -> Dict[str, List[Dict]]:
                     db_opts = set(question["options"])
                     if opts != db_opts:
                         raise ValueError(f"Question '{q.get('question_text')}' has custom options that do not match the database options")
-                            
-                
                 q_cfgs.append(
                     {
                         "question_text": q.get("question_text"),
@@ -2452,29 +2325,6 @@ def sync_projects(*, projects_path: str | Path | None = None, projects_data: Lis
     
     print(f"\n🚀 Starting project upload pipeline with {len(projects_data)} projects...")
     
-    # Check for duplicate project_name values
-    print("\n🔍 Checking for duplicate project_name values...")
-    
-    project_names = []
-    project_name_duplicates = []
-    
-    for idx, project in enumerate(projects_data, 1):
-        # Basic check that project_name exists before processing duplicates
-        if "project_name" not in project:
-            raise ValueError(f"Entry #{idx} missing required field: project_name")
-        
-        project_name = project["project_name"]
-        if project_name in project_names:
-            project_name_duplicates.append((project_name, idx))
-        else:
-            project_names.append(project_name)
-    
-    if project_name_duplicates:
-        duplicate_info = [f"project_name '{name}' at entry #{idx}" for name, idx in project_name_duplicates]
-        raise ValueError(f"Duplicate project_name values found: {', '.join(duplicate_info)}")
-    
-    print(f"✅ No duplicates found - all {len(project_names)} project_name values are unique")
-    
     # Validate and normalize project data
     processed: List[Dict] = []
     with tqdm(total=len(projects_data), desc="Validating project data", unit="project") as pbar:
@@ -2502,69 +2352,78 @@ def sync_projects(*, projects_path: str | Path | None = None, projects_data: Lis
                 # Extract video UID based on format (string or dict)
                 if isinstance(video, str):
                     video_uid = video
-                elif isinstance(video, dict) and "video_uid" in video:
-                    video_uid = video["video_uid"]
-                    if "questions" in video:
-                        # Get question types from database
-                        question_types = {}
-                        try:
-                            with label_pizza.db.SessionLocal() as sess:
-                                schema_id = SchemaService.get_schema_id_by_name(cfg["schema_name"], sess)
-                                questions_df = SchemaService.get_schema_questions(schema_id, sess)
-                                if not questions_df.empty:
-                                    question_types = dict(zip(questions_df["Text"], questions_df["Type"]))
-                        except:
-                            # Schema doesn't exist, skip validation
-                            pass
+                elif isinstance(video, dict):
+                    required_video = {'video_uid', 'questions'}
+                    video_keys = set(video.keys())
+                    if video_keys != required_video:
+                        missing = required_video - video_keys
+                        extra = video_keys - required_video
+                        if missing:
+                            raise ValueError(f"Entry #{idx}, video #{video_idx + 1}: Missing required fields: {', '.join(missing)}")
+                        if extra:
+                            raise ValueError(f"Entry #{idx}, video #{video_idx + 1}: Extra fields: {', '.join(extra)}")
                         
-                        for question_idx, q in enumerate(video["questions"]):
-                            if not isinstance(q, dict):
-                                raise ValueError(f"Entry #{idx}, video '{video_uid}', question #{question_idx + 1}: Invalid format")
-                            question_type = None
-                            with label_pizza.db.SessionLocal() as sess:
-                                try:
-                                    question_type = QuestionService.get_question_by_text(q["question_text"], sess)["type"]
-                                except:
-                                    raise ValueError(f"Entry #{idx}, video '{video_uid}', question #{question_idx + 1}: Question not found in database")
+                    video_uid = video["video_uid"]
+                    # Get question types from database
+                    question_types = {}
+                    try:
+                        with label_pizza.db.SessionLocal() as sess:
+                            schema_id = SchemaService.get_schema_id_by_name(cfg["schema_name"], sess)
+                            questions_df = SchemaService.get_schema_questions(schema_id, sess)
+                            if not questions_df.empty:
+                                question_types = dict(zip(questions_df["Text"], questions_df["Type"]))
+                    except:
+                        # Schema doesn't exist, skip validation
+                        pass
+                    
+                    for question_idx, q in enumerate(video["questions"]):
+                        if not isinstance(q, dict):
+                            raise ValueError(f"Entry #{idx}, video '{video_uid}', question #{question_idx + 1}: Invalid format")
+                        question_type = None
+                        with label_pizza.db.SessionLocal() as sess:
+                            try:
+                                question_type = QuestionService.get_question_by_text(q["question_text"], sess)["type"]
+                            except:
+                                raise ValueError(f"Entry #{idx}, video '{video_uid}', question #{question_idx + 1}: Question not found in database")
 
-                            if question_type not in ["single", "description"]:
-                                raise ValueError(f"Entry #{idx}, video '{video_uid}', question #{question_idx + 1}: Question type must be 'single' or 'description'")
-                            if question_type == "single":
-                                required = {"question_text", "custom_question", "custom_option"}
-                                question_keys = set(q.keys())
-                                
-                                if question_keys != required:
-                                    missing = required - question_keys
-                                    extra = question_keys - required
-                                    
-                                    error_parts = []
-                                    if missing:
-                                        error_parts.append(f"missing: {', '.join(missing)}")
-                                    if extra:
-                                        error_parts.append(f"extra: {', '.join(extra)}")
-                                    
-                                    raise ValueError(f"Entry #{idx}, video '{video_uid}', question #{question_idx + 1}: {'; '.join(error_parts)}")
-
-                            elif question_type == "description":
-                                required = {"question_text", "custom_question"}
-                                question_keys = set(q.keys())
-                                
-                                if question_keys != required:
-                                    missing = required - question_keys
-                                    extra = question_keys - required
-                                    
-                                    error_parts = []
-                                    if missing:
-                                        error_parts.append(f"missing: {', '.join(missing)}")
-                                    if extra:
-                                        error_parts.append(f"extra: {', '.join(extra)}")
-                                    
-                                    raise ValueError(f"Entry #{idx}, video '{video_uid}', question #{question_idx + 1}: {'; '.join(error_parts)}")
-                            question_text = q["question_text"]
+                        if question_type not in ["single", "description"]:
+                            raise ValueError(f"Entry #{idx}, video '{video_uid}', question #{question_idx + 1}: Question type must be 'single' or 'description'")
+                        if question_type == "single":
+                            required = {"question_text", "custom_question", "custom_option"}
+                            question_keys = set(q.keys())
                             
-                            # Check if question exists in database
-                            if question_text not in question_types:
-                                raise ValueError(f"Entry #{idx}, video '{video_uid}', question '{question_text}': Question not found in schema")
+                            if question_keys != required:
+                                missing = required - question_keys
+                                extra = question_keys - required
+                                
+                                error_parts = []
+                                if missing:
+                                    error_parts.append(f"missing: {', '.join(missing)}")
+                                if extra:
+                                    error_parts.append(f"extra: {', '.join(extra)}")
+                                
+                                raise ValueError(f"Entry #{idx}, video '{video_uid}', question #{question_idx + 1}: {'; '.join(error_parts)}")
+
+                        elif question_type == "description":
+                            required = {"question_text", "custom_question"}
+                            question_keys = set(q.keys())
+                            
+                            if question_keys != required:
+                                missing = required - question_keys
+                                extra = question_keys - required
+                                
+                                error_parts = []
+                                if missing:
+                                    error_parts.append(f"missing: {', '.join(missing)}")
+                                if extra:
+                                    error_parts.append(f"extra: {', '.join(extra)}")
+                                
+                                raise ValueError(f"Entry #{idx}, video '{video_uid}', question #{question_idx + 1}: {'; '.join(error_parts)}")
+                        question_text = q["question_text"]
+                        
+                        # Check if question exists in database
+                        if question_text not in question_types:
+                            raise ValueError(f"Entry #{idx}, video '{video_uid}', question '{question_text}': Question not found in schema")
                 else:
                     raise ValueError(f"Entry #{idx}, video #{video_idx + 1}: Invalid video format. Must be string or dict with 'video_uid'")
                 
@@ -2582,6 +2441,25 @@ def sync_projects(*, projects_path: str | Path | None = None, projects_data: Lis
                 
             processed.append(cfg)
             pbar.update(1)
+            
+    # Check for duplicate project_name values
+    print("\n🔍 Checking for duplicate project_name values...")
+    
+    project_names = []
+    project_name_duplicates = []
+    
+    for idx, project in enumerate(projects_data, 1):
+        project_name = project["project_name"]
+        if project_name in project_names:
+            project_name_duplicates.append((project_name, idx))
+        else:
+            project_names.append(project_name)
+    
+    if project_name_duplicates:
+        duplicate_info = [f"project_name '{name}' at entry #{idx}" for name, idx in project_name_duplicates]
+        raise ValueError(f"Duplicate project_name values found: {', '.join(duplicate_info)}")
+    
+    print(f"✅ No duplicates found - all {len(project_names)} project_name values are unique")
 
     # Separate projects to add vs sync
     to_add, to_sync = [], []
@@ -2909,29 +2787,6 @@ def sync_project_groups(
     
     print(f"\n🚀 Starting project groups sync pipeline with {len(project_groups_data)} groups...")
 
-    # Check for duplicate project_group_name values
-    print("\n🔍 Checking for duplicate project_group_name values...")
-    
-    project_group_names = []
-    project_group_name_duplicates = []
-    
-    for idx, group in enumerate(project_groups_data, 1):
-        # Basic check that project_group_name exists before processing duplicates
-        if "project_group_name" not in group:
-            raise ValueError(f"Entry #{idx} missing required field: project_group_name")
-        
-        project_group_name = group["project_group_name"]
-        if project_group_name in project_group_names:
-            project_group_name_duplicates.append((project_group_name, idx))
-        else:
-            project_group_names.append(project_group_name)
-    
-    if project_group_name_duplicates:
-        duplicate_info = [f"project_group_name '{name}' at entry #{idx}" for name, idx in project_group_name_duplicates]
-        raise ValueError(f"Duplicate project_group_name values found: {', '.join(duplicate_info)}")
-    
-    print(f"✅ No duplicates found - all {len(project_group_names)} project_group_name values are unique")
-
     # Validate and normalize project groups data
     processed: List[Dict] = []
     for idx, g in enumerate(project_groups_data, 1):
@@ -2960,6 +2815,25 @@ def sync_project_groups(
         processed.append(g)
 
     print(f"✅ JSON validation passed for {len(processed)} items")
+
+    # Check for duplicate project_group_name values
+    print("\n🔍 Checking for duplicate project_group_name values...")
+    
+    project_group_names = []
+    project_group_name_duplicates = []
+    
+    for idx, group in enumerate(project_groups_data, 1):
+        project_group_name = group["project_group_name"]
+        if project_group_name in project_group_names:
+            project_group_name_duplicates.append((project_group_name, idx))
+        else:
+            project_group_names.append(project_group_name)
+    
+    if project_group_name_duplicates:
+        duplicate_info = [f"project_group_name '{name}' at entry #{idx}" for name, idx in project_group_name_duplicates]
+        raise ValueError(f"Duplicate project_group_name values found: {', '.join(duplicate_info)}")
+    
+    print(f"✅ No duplicates found - all {len(project_group_names)} project_group_name values are unique")
 
     # Classify add vs update with one read-only session
     to_add, to_update = [], []
@@ -3330,7 +3204,14 @@ def load_and_flatten_json_files(folder_path: str) -> list[dict]:
 
 
 def check_for_duplicates(data: list[dict], data_type: str) -> None:
-    """Check for duplicate entries based on video_uid, user_name, question_group_title, project_name.
+    """Check for duplicate entries with different logic for annotations vs ground truths.
+    
+    For annotations: Check duplicates based on (video_uid, user_name, question_text, project_name)
+    - Same user cannot answer the same question for the same video in the same project twice
+    
+    For ground truths: Check duplicates based on (video_uid, question_text, project_name)
+    - There can only be one ground truth answer per question per video per project
+    - User doesn't matter for ground truth uniqueness
     
     Args:
         data: List of dictionaries to check for duplicates
@@ -3342,31 +3223,59 @@ def check_for_duplicates(data: list[dict], data_type: str) -> None:
     seen = set()
     duplicates = []
     
+    # Determine checking mode based on data_type parameter
+    is_ground_truth_mode = "ground truth" in data_type.lower()
+    
     for idx, item in enumerate(data):
-        # Create a unique key based on the combination of fields
-        key = (
-            item.get("video_uid", "").split("/")[-1],
-            item.get("user_name", ""),
-            item.get("question_group_title", ""),
-            item.get("project_name", "")
-        )
+        video_uid = item.get("video_uid", "").split("/")[-1]
+        user_name = item.get("user_name", "")
+        project_name = item.get("project_name", "")
+        answers = item.get("answers", {})
         
-        if key in seen:
-            duplicates.append({
-                "index": idx,
-                "video_uid": item.get("video_uid"),
-                "user_name": item.get("user_name"),
-                "question_group_title": item.get("question_group_title"),
-                "project_name": item.get("project_name")
-            })
-        else:
-            seen.add(key)
+        # Check each question in the answers dict
+        for question_text, answer_value in answers.items():
+            if is_ground_truth_mode:
+                # For ground truths: only check (video_uid, question_text, project_name)
+                # User doesn't matter - there should be only one ground truth per question per video per project
+                key = (
+                    video_uid,
+                    question_text,
+                    project_name
+                )
+            else:
+                # For regular annotations: check (video_uid, user_name, question_text, project_name)
+                # Same user cannot answer the same question twice
+                key = (
+                    video_uid,
+                    user_name,
+                    question_text,
+                    project_name
+                )
+            
+            if key in seen:
+                duplicate_info = {
+                    "index": idx + 1,  # 1-based indexing for user-friendly error messages
+                    "video_uid": item.get("video_uid"),
+                    "user_name": user_name,
+                    "question_text": question_text,
+                    "project_name": project_name,
+                    "answer": answer_value
+                }
+                duplicates.append(duplicate_info)
+            else:
+                seen.add(key)
     
     if duplicates:
-        error_msg = f"Found {len(duplicates)} duplicate {data_type} entries:\n"
-        for dup in duplicates:
-            error_msg += f"  - Index {dup['index']}: {dup['video_uid']} | {dup['user_name']} | {dup['question_group_title']} | {dup['project_name']}\n"
-        raise ValueError(error_msg)
+        if is_ground_truth_mode:
+            error_msg = f"Found {len(duplicates)} duplicate {data_type} entries (multiple ground truths for same question/video/project):\n"
+            for dup in duplicates:
+                error_msg += f"  - Entry #{dup['index']}: {dup['video_uid']} | '{dup['question_text']}' | {dup['project_name']}\n"
+        else:
+            error_msg = f"Found {len(duplicates)} duplicate {data_type} question entries:\n"
+            for dup in duplicates:
+                error_msg += f"  - Entry #{dup['index']}: {dup['video_uid']} | {dup['user_name']} | '{dup['question_text']}' | {dup['project_name']}\n"
+        
+        raise ValueError(error_msg.rstrip())
 
 
 def sync_annotations(annotations_folder: str = None, 

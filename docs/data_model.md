@@ -6,7 +6,7 @@ This guide explains the core concepts behind Label Pizza: videos, users, questio
 
 ```bash
 # Initialize database using the database url (DBURL) defined in your .env (Caveat: This will delete all existing data in the database)
-python label_pizza/init_or_reset_db.py \
+python label_pizza/manage_db.py \
   --mode init \
   --database-url-name DBURL \
   --email admin1@example.com \

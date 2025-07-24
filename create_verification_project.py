@@ -317,7 +317,6 @@ def create_verification_project(video_dir: str, database_url_name: str, hf_token
         "is_reusable": False,
         "is_auto_submit": False,
         "verification_function": None,
-        "is_active": True,
         "questions": [{
             "text": f"Is this video correctly classified as {project_name}?",
             "display_text": f"Is this video correctly classified as {project_name}?",

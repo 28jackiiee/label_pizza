@@ -37,7 +37,8 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv()
+load_dotenv(".env")
+
 
 try:
     import psycopg2
@@ -54,7 +55,7 @@ class DatabaseBackupRestore:
         self.db_url = db_url
         self.parsed_url = urlparse(db_url)
     
-    def create_backup(self, output_file: str, compress: bool = False, schema_only: bool = False) -> bool:
+    def create_backup(self, output_file: str, compress: bool = False, schema_only: bool = False, verbose: bool = False) -> bool:
         """Create a database backup"""
         try:
             # Handle compression
@@ -62,9 +63,10 @@ class DatabaseBackupRestore:
                 output_file += '.gz'
                 
             print(f"🔄 Creating backup: {output_file}")
-            print(f"   Database: {self.parsed_url.hostname}")
-            print(f"   Schema only: {schema_only}")
-            print(f"   Compressed: {compress}")
+            if verbose:
+                print(f"   Database: {self.parsed_url.hostname}")
+                print(f"   Schema only: {schema_only}")
+                print(f"   Compressed: {compress}")
             
             # Connect to database
             conn = psycopg2.connect(self.db_url)
@@ -85,15 +87,19 @@ class DatabaseBackupRestore:
                 file_handle.write("-- Format: JSON data with parameterized queries\n\n")
                 
                 # Backup schema
-                print("   📝 Starting schema backup...")
-                self._backup_schema(conn, file_handle)
-                print("   ✅ Schema backup completed")
+                if verbose:
+                    print("   📝 Starting schema backup...")
+                self._backup_schema(conn, file_handle, verbose)
+                if verbose:
+                    print("   ✅ Schema backup completed")
                 
                 # Backup data (unless schema-only)
                 if not schema_only:
-                    print("   💾 Starting data backup...")
-                    self._backup_data(conn, file_handle)
-                    print("   ✅ Data backup completed")
+                    if verbose:
+                        print("   💾 Starting data backup...")
+                    self._backup_data(conn, file_handle, verbose)
+                    if verbose:
+                        print("   ✅ Data backup completed")
                 
                 file_handle.write("\n-- Backup completed\n")
                 
@@ -103,7 +109,7 @@ class DatabaseBackupRestore:
             
             # Get file size
             file_size = os.path.getsize(output_file)
-            print(f"   ✅ Backup completed: {file_size:,} bytes")
+            print(f"✅ Backup completed: {file_size:,} bytes")
             
             # Create metadata file
             self._create_backup_metadata(output_file, schema_only, compress)
@@ -112,11 +118,12 @@ class DatabaseBackupRestore:
             
         except Exception as e:
             print(f"❌ Backup failed: {e}")
-            import traceback
-            print(f"   Full error: {traceback.format_exc()}")
+            if verbose:
+                import traceback
+                print(f"   Full error: {traceback.format_exc()}")
             return False
-    
-    def restore_backup(self, input_file: str, force: bool = False) -> bool:
+
+    def restore_backup(self, input_file: str, force: bool = False, verbose: bool = False) -> bool:
         """Restore a database backup with optimized performance"""
         try:
             if not os.path.exists(input_file):
@@ -127,9 +134,10 @@ class DatabaseBackupRestore:
             is_compressed = input_file.endswith('.gz')
             
             print(f"🔄 Restoring backup: {input_file}")
-            print(f"   Database: {self.parsed_url.hostname}")
-            print(f"   Compressed: {is_compressed}")
-            print(f"   Mode: FAST RESTORE (optimized for speed)")
+            if verbose:
+                print(f"   Database: {self.parsed_url.hostname}")
+                print(f"   Compressed: {is_compressed}")
+                print(f"   Mode: FAST RESTORE (optimized for speed)")
             
             if not force:
                 response = input("⚠️  This will overwrite existing data. Continue? (y/N): ")
@@ -145,7 +153,8 @@ class DatabaseBackupRestore:
                 with conn:
                     with conn.cursor() as cursor:
                         # Read backup file
-                        print("   📖 Reading backup file...")
+                        if verbose:
+                            print("   📖 Reading backup file...")
                         if is_compressed:
                             file_handle = gzip.open(input_file, 'rt', encoding='utf-8')
                         else:
@@ -153,29 +162,32 @@ class DatabaseBackupRestore:
                         
                         try:
                             content = file_handle.read()
-                            print(f"   📄 Processing backup content ({len(content)} characters)")
+                            if verbose:
+                                print(f"   📄 Processing backup content ({len(content)} characters)")
                             
                             # Parse and execute backup with optimizations
-                            self._restore_from_content(cursor, content)
+                            self._restore_from_content(cursor, content, verbose)
                             
                         finally:
                             file_handle.close()
                         
-                        print(f"   ✅ Transaction committed - all changes saved")
+                        if verbose:
+                            print(f"   ✅ Transaction committed - all changes saved")
                 
             finally:
                 conn.close()
             
-            print("   🎉 FAST RESTORE completed successfully!")
+            print("🎉 Restore completed successfully!")
             return True
             
         except Exception as e:
             print(f"❌ Restore failed: {e}")
-            import traceback
-            print(f"   Full error: {traceback.format_exc()}")
+            if verbose:
+                import traceback
+                print(f"   Full error: {traceback.format_exc()}")
             return False
-    
-    def _backup_schema(self, conn, file_handle):
+
+    def _backup_schema(self, conn, file_handle, verbose: bool = False):
         """Backup database schema"""
         with conn.cursor() as cursor:
             # Get all tables
@@ -188,7 +200,8 @@ class DatabaseBackupRestore:
             """)
             
             tables = [row[0] for row in cursor.fetchall()]
-            print(f"   📋 Found {len(tables)} tables to backup")
+            if verbose:
+                print(f"   📋 Found {len(tables)} tables to backup")
             
             # Drop existing tables (in reverse order for dependencies)
             file_handle.write("-- Drop existing tables and sequences\n")
@@ -229,10 +242,12 @@ class DatabaseBackupRestore:
                     file_handle.write(create_seq + ";\n")
                 
                 file_handle.write("\n")
-                print(f"   📝 Found {len(sequences)} sequences")
+                if verbose:
+                    print(f"   📝 Found {len(sequences)} sequences")
                 
             except Exception as e:
-                print(f"   ⚠️  Warning: Could not backup sequences with detailed info: {e}")
+                if verbose:
+                    print(f"   ⚠️  Warning: Could not backup sequences with detailed info: {e}")
                 # Try the simpler pg_sequences approach
                 try:
                     cursor.execute("""
@@ -248,10 +263,12 @@ class DatabaseBackupRestore:
                         file_handle.write(f"CREATE SEQUENCE \"{seq_name}\";\n")
                     
                     file_handle.write("\n")
-                    print(f"   📝 Found {len(simple_sequences)} sequences (simple mode)")
+                    if verbose:
+                        print(f"   📝 Found {len(simple_sequences)} sequences (simple mode)")
                     
                 except Exception as e2:
-                    print(f"   ⚠️  Could not backup sequences at all: {e2}")
+                    if verbose:
+                        print(f"   ⚠️  Could not backup sequences at all: {e2}")
                     # Final fallback - try to detect sequences from table defaults
                     try:
                         cursor.execute("""
@@ -274,16 +291,19 @@ class DatabaseBackupRestore:
                                 file_handle.write(f"CREATE SEQUENCE \"{clean_seq_name}\";\n")
                         
                         file_handle.write("\n")
-                        print(f"   📝 Detected {len(detected_sequences)} sequences from table defaults")
+                        if verbose:
+                            print(f"   📝 Detected {len(detected_sequences)} sequences from table defaults")
                         
                     except Exception as e3:
-                        print(f"   ⚠️  No sequences could be detected: {e3}")
+                        if verbose:
+                            print(f"   ⚠️  No sequences could be detected: {e3}")
                         file_handle.write("-- No sequences detected\n\n")
             
             # Create tables
             file_handle.write("-- Create tables\n")
             for table in tables:
-                print(f"   📝 Backing up schema for: {table}")
+                if verbose:
+                    print(f"   📝 Backing up schema for: {table}")
                 
                 try:
                     # Get table definition
@@ -304,7 +324,8 @@ class DatabaseBackupRestore:
                     columns = cursor.fetchall()
                     
                     if not columns:
-                        print(f"   ⚠️  No columns found for {table}, skipping")
+                        if verbose:
+                            print(f"   ⚠️  No columns found for {table}, skipping")
                         continue
                     
                     file_handle.write(f"CREATE TABLE \"{table}\" (\n")
@@ -338,12 +359,14 @@ class DatabaseBackupRestore:
                         if pk_result and pk_result[0]:
                             file_handle.write(f",\n    PRIMARY KEY ({pk_result[0]})")
                     except Exception as e:
-                        print(f"   ⚠️  Could not get primary key for {table}: {e}")
+                        if verbose:
+                            print(f"   ⚠️  Could not get primary key for {table}: {e}")
                     
                     file_handle.write("\n);\n\n")
                     
                 except Exception as e:
-                    print(f"   ❌ Error backing up schema for {table}: {e}")
+                    if verbose:
+                        print(f"   ❌ Error backing up schema for {table}: {e}")
                     continue
             
             # After creating tables, update sequence values to current max values
@@ -364,9 +387,10 @@ class DatabaseBackupRestore:
                         file_handle.write(f"-- Update {seq_name} will be done after data insert\n")
                         
             except Exception as e:
-                print(f"   ⚠️  Warning: Could not prepare sequence updates: {e}")
-    
-    def _backup_data(self, conn, file_handle):
+                if verbose:
+                    print(f"   ⚠️  Warning: Could not prepare sequence updates: {e}")
+
+    def _backup_data(self, conn, file_handle, verbose: bool = False):
         """Backup table data using JSON format for safety"""
         # First get tables with regular cursor
         with conn.cursor() as cursor:
@@ -382,9 +406,13 @@ class DatabaseBackupRestore:
         
         file_handle.write("-- Insert data\n")
         
+        total_rows = 0
+        tables_with_data = 0
+        
         for table in tables:
             try:
-                print(f"   💾 Backing up data for: {table}")
+                if verbose:
+                    print(f"   💾 Backing up data for: {table}")
                 
                 # Use regular cursor for metadata queries
                 with conn.cursor() as meta_cursor:
@@ -396,7 +424,11 @@ class DatabaseBackupRestore:
                         file_handle.write(f"-- No data in table {table}\n")
                         continue
                     
-                    print(f"     💾 {row_count} rows")
+                    total_rows += row_count
+                    tables_with_data += 1
+                    
+                    if verbose:
+                        print(f"     💾 {row_count} rows")
                     
                     # Get column names
                     meta_cursor.execute("""
@@ -409,7 +441,8 @@ class DatabaseBackupRestore:
                     columns = [row[0] for row in meta_cursor.fetchall()]
                     
                     if not columns:
-                        print(f"     ⚠️  No columns found for {table}")
+                        if verbose:
+                            print(f"     ⚠️  No columns found for {table}")
                         continue
                 
                 # Write data section header
@@ -456,16 +489,22 @@ class DatabaseBackupRestore:
                                 rows_processed += 1
                                 
                             except Exception as e:
-                                print(f"     ⚠️  Error processing row {rows_processed} in {table}: {e}")
+                                if verbose:
+                                    print(f"     ⚠️  Error processing row {rows_processed} in {table}: {e}")
                                 continue
                 
                 file_handle.write(f"-- DATA_END:{table}\n\n")
-                print(f"     ✅ Processed {rows_processed} rows")
+                if verbose:
+                    print(f"     ✅ Processed {rows_processed} rows")
                 
             except Exception as e:
-                print(f"   ❌ Error backing up data for {table}: {e}")
+                if verbose:
+                    print(f"   ❌ Error backing up data for {table}: {e}")
                 file_handle.write(f"-- ERROR backing up {table}: {e}\n\n")
                 continue
+        
+        if not verbose:
+            print(f"   📊 Backed up {total_rows:,} rows from {tables_with_data} tables")
         
         # Add sequence value updates at the end
         file_handle.write("-- Update sequence values to current maximums\n")
@@ -491,15 +530,17 @@ class DatabaseBackupRestore:
                             max_val = cursor.fetchone()[0]
                             file_handle.write(f"SELECT setval('\"{seq_name}\"', {max_val}, false);\n")
                         except Exception as e:
-                            print(f"   ⚠️  Could not get max value for {table_name}: {e}")
+                            if verbose:
+                                print(f"   ⚠️  Could not get max value for {table_name}: {e}")
                             file_handle.write(f"-- Could not update {seq_name}: {e}\n")
                 
                 file_handle.write("\n")
                 
             except Exception as e:
-                print(f"   ⚠️  Warning: Could not update sequence values: {e}")
-    
-    def _restore_from_content(self, cursor, content: str):
+                if verbose:
+                    print(f"   ⚠️  Warning: Could not update sequence values: {e}")
+
+    def _restore_from_content(self, cursor, content: str, verbose: bool = False):
         """Restore from backup content with optimized bulk inserts"""
         lines = content.split('\n')
         
@@ -532,13 +573,15 @@ class DatabaseBackupRestore:
                         columns_json = line.split(':', 1)[1]
                         current_columns = json.loads(columns_json)
                     except Exception as e:
-                        print(f"   ⚠️  Error parsing columns on line {line_num}: {e}")
+                        if verbose:
+                            print(f"   ⚠️  Error parsing columns on line {line_num}: {e}")
                 elif line.startswith('-- ROW:'):
                     try:
                         row_json = line.split(':', 1)[1]
                         current_rows.append(json.loads(row_json))
                     except Exception as e:
-                        print(f"   ⚠️  Error parsing row on line {line_num}: {e}")
+                        if verbose:
+                            print(f"   ⚠️  Error parsing row on line {line_num}: {e}")
                 elif line.startswith('-- DATA_END:'):
                     if current_table and current_columns:
                         data_sections.append({
@@ -577,7 +620,8 @@ class DatabaseBackupRestore:
                 regular_schema.append(stmt)
         
         # Execute regular schema statements first
-        print(f"   📝 Executing {len(regular_schema)} schema statements")
+        if verbose:
+            print(f"   📝 Executing {len(regular_schema)} schema statements")
         schema_errors = 0
         
         for i, sql in enumerate(regular_schema):
@@ -588,18 +632,23 @@ class DatabaseBackupRestore:
                 cursor.execute(sql)
             except Exception as e:
                 schema_errors += 1
-                error_msg = str(e).replace('\n', ' ')[:100]
-                print(f"   ⚠️  Schema error #{schema_errors}: {error_msg}...")
-                
-                # For debugging, show the problematic SQL
-                if schema_errors <= 3:  # Only show first few errors
-                    print(f"        SQL: {sql[:200]}...")
+                if verbose:
+                    error_msg = str(e).replace('\n', ' ')[:100]
+                    print(f"   ⚠️  Schema error #{schema_errors}: {error_msg}...")
+                    
+                    # For debugging, show the problematic SQL
+                    if schema_errors <= 3:  # Only show first few errors
+                        print(f"        SQL: {sql[:200]}...")
         
-        if schema_errors > 0:
+        if schema_errors > 0 and verbose:
             print(f"   ⚠️  Had {schema_errors} schema errors (this may be normal)")
         
         # Execute data inserts with FAST bulk loading
-        print(f"   📊 Restoring data for {len(data_sections)} tables (FAST MODE)")
+        total_rows_restored = sum(len(section['rows']) for section in data_sections)
+        if verbose:
+            print(f"   📊 Restoring data for {len(data_sections)} tables (FAST MODE)")
+        else:
+            print(f"   📊 Restoring {total_rows_restored:,} rows to {len(data_sections)} tables")
         
         for section in data_sections:
             table = section['table']
@@ -607,26 +656,31 @@ class DatabaseBackupRestore:
             rows = section['rows']
             
             if not rows:
-                print(f"   📋 No data for table {table}")
+                if verbose:
+                    print(f"   📋 No data for table {table}")
                 continue
             
-            print(f"   💾 FAST restoring {len(rows)} rows to {table}")
+            if verbose:
+                print(f"   💾 FAST restoring {len(rows)} rows to {table}")
             
             try:
                 # Method 1: Try COPY FROM (fastest possible)
-                if self._try_copy_from_restore(cursor, table, columns, rows):
-                    print(f"     ⚡ Used COPY FROM - maximum speed!")
+                if self._try_copy_from_restore(cursor, table, columns, rows, verbose):
+                    if verbose:
+                        print(f"     ⚡ Used COPY FROM - maximum speed!")
                     continue
                     
                 # Method 2: Fallback to batch inserts (still much faster than individual)
-                self._batch_insert_restore(cursor, table, columns, rows)
+                self._batch_insert_restore(cursor, table, columns, rows, verbose)
                     
             except Exception as e:
-                print(f"   ❌ Failed to restore {table}: {e}")
+                if verbose:
+                    print(f"   ❌ Failed to restore {table}: {e}")
         
         # Finally, execute sequence updates
         if sequence_updates:
-            print(f"   🔄 Updating {len(sequence_updates)} sequences")
+            if verbose:
+                print(f"   🔄 Updating {len(sequence_updates)} sequences")
             seq_errors = 0
             
             for seq_sql in sequence_updates:
@@ -634,16 +688,17 @@ class DatabaseBackupRestore:
                     cursor.execute(seq_sql)
                 except Exception as e:
                     seq_errors += 1
-                    if seq_errors <= 3:
+                    if verbose and seq_errors <= 3:
                         error_msg = str(e).replace('\n', ' ')[:50]
                         print(f"   ⚠️  Sequence update error: {error_msg}...")
             
             if seq_errors == 0:
-                print(f"   ✅ All sequences updated successfully")
-            else:
+                if verbose:
+                    print(f"   ✅ All sequences updated successfully")
+            elif verbose:
                 print(f"   ⚠️  {seq_errors} sequence update errors")
-    
-    def _try_copy_from_restore(self, cursor, table: str, columns: List[str], rows: List[dict]) -> bool:
+
+    def _try_copy_from_restore(self, cursor, table: str, columns: List[str], rows: List[dict], verbose: bool = False) -> bool:
         """Try to use COPY FROM for maximum speed (10-100x faster than INSERT)"""
         try:
             import io
@@ -696,14 +751,16 @@ class DatabaseBackupRestore:
             copy_sql = f'COPY public."{table}" ({columns_str}) FROM STDIN WITH (FORMAT text, DELIMITER E\'\\t\', NULL \'\\N\')'
             
             cursor.copy_expert(copy_sql, csv_data)
-            print(f"     ⚡ COPY FROM: {len(rows)} rows in milliseconds!")
+            if verbose:
+                print(f"     ⚡ COPY FROM: {len(rows)} rows in milliseconds!")
             return True
             
         except Exception as e:
-            print(f"     ⚠️  COPY FROM failed: {e}")
+            if verbose:
+                print(f"     ⚠️  COPY FROM failed: {e}")
             return False
-    
-    def _batch_insert_restore(self, cursor, table: str, columns: List[str], rows: List[dict]):
+
+    def _batch_insert_restore(self, cursor, table: str, columns: List[str], rows: List[dict], verbose: bool = False):
         """Use batch inserts (much faster than individual INSERTs)"""
         # Build parameterized INSERT statement
         columns_str = ', '.join(f'"{col}"' for col in columns)
@@ -747,7 +804,7 @@ class DatabaseBackupRestore:
                 
             except Exception as e:
                 error_count += 1
-                if error_count <= 3:  # Only show first few errors
+                if verbose and error_count <= 3:  # Only show first few errors
                     error_msg = str(e).replace('\n', ' ')[:100]
                     print(f"     ⚠️  Row {row_idx} prep error: {error_msg}...")
         
@@ -763,13 +820,14 @@ class DatabaseBackupRestore:
                 total_inserted += len(batch)
                 
                 # Show progress for large tables
-                if len(batch_data) > 5000 and i % (batch_size * 10) == 0:
+                if verbose and len(batch_data) > 5000 and i % (batch_size * 10) == 0:
                     progress = (i + len(batch)) / len(batch_data) * 100
                     print(f"     📈 Progress: {progress:.1f}% ({total_inserted}/{len(batch_data)} rows)")
                     
             except Exception as e:
-                error_msg = str(e).replace('\n', ' ')[:100]
-                print(f"     ⚠️  Batch insert error: {error_msg}...")
+                if verbose:
+                    error_msg = str(e).replace('\n', ' ')[:100]
+                    print(f"     ⚠️  Batch insert error: {error_msg}...")
                 
                 # Fallback: try individual inserts for this batch
                 for row_values in batch:
@@ -779,8 +837,9 @@ class DatabaseBackupRestore:
                     except:
                         pass  # Skip problematic rows
         
-        print(f"     ✅ Batch insert: {total_inserted} rows inserted, {len(rows) - total_inserted} errors")
-    
+        if verbose:
+            print(f"     ✅ Batch insert: {total_inserted} rows inserted, {len(rows) - total_inserted} errors")
+
     def _create_backup_metadata(self, backup_file: str, schema_only: bool, compressed: bool):
         """Create metadata file alongside backup"""
         metadata = {

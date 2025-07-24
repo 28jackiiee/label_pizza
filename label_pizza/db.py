@@ -16,11 +16,14 @@ from label_pizza.models import *  # This ensures all models are registered with 
 # Placeholder variables that will be set by init_database()
 engine = None
 SessionLocal = None
+current_database_url_name = None
 
 def init_database(database_url_name="DBURL"):
     """Initialize database engine and session maker"""
-    global engine, SessionLocal
-    
+    global engine, SessionLocal, current_database_url_name
+
+    current_database_url_name = database_url_name
+
     # Clean up existing engine if re-initializing
     if engine is not None:
         engine.dispose()
