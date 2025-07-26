@@ -1,2 +1,15 @@
-
 reflex==0.7.13
+sqlalchemy
+supabase
+streamlit
+streamlit-feedback
+opencv-python-headless
+numpy
+pandas
+matplotlib
+psycopg2-binary
+python-dotenv
+pytest
+openpyxl
+tqdm
+label_pizza
