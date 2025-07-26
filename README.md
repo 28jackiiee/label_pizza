@@ -130,8 +130,6 @@ echo 'DBURL=postgresql://<user>:<password>@<host>:<port>/<database>' > .env
 ```
 (Replace the angled-bracket values with the ones Supabase shows.)
 
-### 3 · Initialize database, seed an admin user, and launch the app!
-
 ```bash
 # create the first Admin account (change the args to your own)
 python label_pizza/manage_db.py \

@@ -25,7 +25,8 @@ dependencies = [
     "pytest",
     "reflex",
     "openpyxl",
-    "tqdm"
+    "tqdm",
+    "label_pizza"
 ]
 
 # This section tells setuptools to find packages automatically
